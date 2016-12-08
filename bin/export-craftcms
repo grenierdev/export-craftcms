@@ -23,8 +23,6 @@ const db = MySQL.createPool({
 	database: argv.db
 });
 
-console.time('t');
-
 Promise.all([
 	new Promise(resolve => {
 		db.query('SELECT locale FROM craft_locales ORDER BY sortOrder', (err, rows) => {
@@ -78,48 +76,217 @@ Promise.all([
 	}),
 ])
 .spread((locales, globals, sections, types, categories, matrices, assets, layouts, layoutFields, fields) => {
-	console.timeEnd('t');
 
-	console.time('t');
-	
+	const outputField = (field) => {
+		let out = `${field.handle}: { `;
+		
+		out += `type: Type.String, `;
+
+		if (field.required) {
+			out += `required: true, `;
+		}
+
+		if (field.name) {
+			out += `label: ${JSON.stringify(field.name)}, `;
+		}
+
+		if (field.instructions) {
+			out += `instructions: ${JSON.stringify(field.instructions)}, `;
+		}
+
+		return `${out} }`;
+	};
+
+	process.stdout.write(`"use strict"
+
+const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
+
+`);
+
+	let groupFields = [
+		{handle: 'id', type: 'ID', name: 'ID'},
+		{handle: 'handle', type: 'Text', required: true, name: 'Handle'},
+		{handle: 'name', type: 'Text', required: true, name: 'Name'}
+	];
+	process.stdout.write(`class Group extends Model {
+	static get schema () {
+		return {
+			${groupFields.map(field => outputField(field)).join(',\n\t\t\t')}
+		}
+	}
+}
+
+`);
+
 	let userLayoutId = layouts.filter(l => l.type === 'User')[0].id;
-	let userFields = layoutFields.filter(lf => lf.layoutId == userLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]);
-	console.log(`User`, userFields.length);
+	let userFields = [
+		{handle: 'id', type: 'ID', name: 'ID'},
+		{handle: 'username', type: 'Text', required: true, name: 'Username'},
+		{handle: 'firstName', type: 'Text', name: 'First name'},
+		{handle: 'lastName', type: 'Text', name: 'Last name'},
+		{handle: 'email', type: 'Text', required: true, name: 'Email'},
+		{handle: 'preferredLocale', type: 'Locale', name: 'Preferred locale'},
+		{handle: 'groups', type: 'Group', name: 'Groups'},
+	];
+	userFields.push.apply(userFields, layoutFields.filter(lf => lf.layoutId == userLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]));
 
-	globals.forEach(global => {
-		let globalFields = layoutFields.filter(lf => lf.layoutId == global.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]);
-		console.log(`Global ${global.handle}`, globalFields.length);
-	});
+	process.stdout.write(`class User extends Model {
+	static get schema () {
+		return {
+			${userFields.map(field => outputField(field)).join(',\n\t\t\t')}
+		}
+	}
+}
+
+`);
+
+	// globals.forEach(global => {
+	// 	let globalFields = layoutFields.filter(lf => lf.layoutId == global.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]);
+	// 	console.log(`Global ${global.handle}`, globalFields.length);
+	// });
 
 	sections.forEach(section => {
 		let sectionTypes = types.filter(t => t.sectionId == section.id).map(type => {
-			let typeFields = layoutFields.filter(lf => lf.layoutId == type.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]);
+			let typeFields = [
+				{handle: 'id', type: 'ID', name: 'ID'},
+				{handle: 'slug', type: 'Text', name: 'Slug'},
+				{handle: 'title', type: 'Text', name: 'Title'},
+				{handle: 'author', type: 'User', name: 'Author'},
+				{handle: 'postDate', type: 'Datetime', name: 'Publish date'},
+				{handle: 'expiryDate', type: 'Datetime', name: 'Expire date'},
+				{handle: 'enabled', type: 'Boolean', name: 'Enabled'},
+			];
+			typeFields.push.apply(typeFields, layoutFields.filter(lf => lf.layoutId == type.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]));
 			return Object.assign({}, type, { fields: typeFields });
 		});
 
-		console.log(`Section ${section.handle} :`, sectionTypes.map(t => `${t.handle} (${t.fields.length})`).join(', '));
+		const sectionHandle = section.handle[0].toUpperCase() + section.handle.substr(1);
+
+		const typeHandles = [];
+
+		sectionTypes.forEach(type => {
+			const typeHandle = sectionTypes.length == 1 ? sectionHandle : sectionHandle + type.handle[0].toUpperCase() + type.handle.substr(1);
+			typeHandles.push(`Section${typeHandle}`);
+			process.stdout.write(`class Section${typeHandle} extends Model {
+	static get schema () {
+		return {
+			${type.fields.map(field => outputField(field)).join(',\n\t\t\t')}
+		}
+	}
+}
+
+`);
+		});
+
+		if (typeHandles.length > 1) {
+			process.stdout.write(`class Section${sectionHandle} extends UnionModel {
+	static get models () {
+		return [${typeHandles.join(', ')}];
+	}
+}
+
+`);
+		}
 	})
 
 	categories.forEach(category => {
-		let categoryFields = layoutFields.filter(lf => lf.layoutId == category.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]);
-		console.log(`Category ${category.handle}`, categoryFields.length);
+		let categoryFields = [
+			{handle: 'id', type: 'ID', name: 'ID'},
+			{handle: 'slug', type: 'Text', name: 'Slug'},
+			{handle: 'title', type: 'Text', name: 'Title'},
+		];
+		categoryFields.push.apply(categoryFields, layoutFields.filter(lf => lf.layoutId == category.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]));
+
+		const handle = category.handle[0].toUpperCase() + category.handle.substr(1);
+		process.stdout.write(`class Category${handle} extends Model {
+	static get schema () {
+		return {
+			${categoryFields.map(field => outputField(field)).join(',\n\t\t\t')}
+		}
+	}
+}
+
+`);
 	});
 
+	const assetHandles = [];
+
 	assets.forEach(asset => {
-		let assetFields = layoutFields.filter(lf => lf.layoutId == asset.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]);
-		console.log(`Asset ${asset.handle}`, assetFields.length);
+		let assetFields = [
+			{handle: 'id', type: 'ID', name: 'ID'},
+			{handle: 'filename', type: 'Text', name: 'Filename'},
+			{handle: 'folder', type: 'Folder', name: 'Folder'},
+			{handle: 'kind', type: 'Text', name: 'Kind'},
+			{handle: 'size', type: 'Number', name: 'Size'},
+			{handle: 'dateModified', type: 'Datetime', name: 'Modified date'},
+		];
+		assetFields.push.apply(assetFields, layoutFields.filter(lf => lf.layoutId == asset.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]));
+		
+		const handle = asset.handle[0].toUpperCase() + asset.handle.substr(1);
+		assetHandles.push(`Asset${handle}`);
+		process.stdout.write(`class Asset${handle} extends Model {
+	static get schema () {
+		return {
+			${assetFields.map(field => outputField(field)).join(',\n\t\t\t')}
+		}
+	}
+}
+
+`);
 	});
+
+	if (assetHandles.length > 0) {
+			process.stdout.write(`class Asset extends UnionModel {
+	static get models () {
+		return [${assetHandles.join(', ')}];
+	}
+}
+
+`);
+	}
 
 	fields.filter(f => f.type == 'Matrix').forEach(field => {
 		let types = matrices.filter(m => m.fieldId == field.id).map(matrix => {
-			let matrixFields = layoutFields.filter(lf => lf.layoutId == matrix.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]);
+			let matrixFields = [
+				{handle: 'id', type: 'ID', name: 'ID'},
+			];
+			matrixFields.push.apply(matrixFields, layoutFields.filter(lf => lf.layoutId == matrix.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]));
 			return Object.assign({}, matrix, { fields: matrixFields });
 		});
-		console.log(`Matrix ${field.handle} :`, types.map(t => `${t.handle} (${t.fields.length})`).join(', '));
+
+		const matrixHandle = field.handle[0].toUpperCase() + field.handle.substr(1);
+
+		const typeHandles = [];
+
+		types.forEach(type => {
+			const typeHandle = types.length == 1 ? matrixHandle : matrixHandle + type.handle[0].toUpperCase() + type.handle.substr(1);
+			typeHandles.push(`Matrix${typeHandle}`);
+			process.stdout.write(`class Matrix${typeHandle} extends Model {
+	static get schema () {
+		return {
+			${type.fields.map(field => outputField(field)).join(',\n\t\t\t')}
+		}
+	}
+}
+
+`);
+		});
+
+		if (typeHandles.length > 1) {
+			process.stdout.write(`class Matrix${matrixHandle} extends UnionModel {
+	static get models () {
+		return [${typeHandles.join(', ')}];
+	}
+}
+
+`);
+		}
 	});
 
 })
+.catch(err => {
+	console.error(err);
+})
 .then(() => {
-	console.timeEnd('t');
 	db.end();
 })
