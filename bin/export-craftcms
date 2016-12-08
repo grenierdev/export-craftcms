@@ -1,0 +1,125 @@
+#!/usr/bin/env node
+"use strict";
+
+const help = require('optimist')
+.usage('Usage: $0 --host [host] --port [port] --user [user] --pass [pass] --db [db]')
+.demand(['host', 'user', 'db'])
+.describe('host', 'The hostname to the database you are connecting to')
+.describe('port', 'The port number to connect to')
+.describe('user', 'The MySQL user to authenticate as')
+.describe('pass', 'The password for the MySQL user')
+.describe('db', 'Name of the database to use for this db')
+
+const argv = help.argv;
+const MySQL = require('mysql');
+const Promise = require('bluebird');
+
+const db = MySQL.createPool({
+	connectionLimit: 10,
+	host: argv.host,
+	port: argv.port || 3306,
+	user: argv.user,
+	password: argv.pass,
+	database: argv.db
+});
+
+console.time('t');
+
+Promise.all([
+	new Promise(resolve => {
+		db.query('SELECT locale FROM craft_locales ORDER BY sortOrder', (err, rows) => {
+			resolve(err ? [] : rows);
+		});
+	}),
+	new Promise(resolve => {
+		db.query('SELECT id, fieldLayoutId, name, handle FROM craft_globalsets', (err, rows) => {
+			resolve(err ? [] : rows);
+		});
+	}),
+	new Promise(resolve => {
+		db.query('SELECT id, name, handle, type FROM craft_sections', (err, rows) => {
+			resolve(err ? [] : rows);
+		});
+	}),
+	new Promise(resolve => {
+		db.query('SELECT id, sectionId, fieldLayoutId, name, handle, hasTitleField, titleLabel FROM craft_entrytypes ORDER BY sortOrder', (err, rows) => {
+			resolve(err ? [] : rows);
+		});
+	}),
+	new Promise(resolve => {
+		db.query('SELECT id, fieldLayoutId, name, handle FROM craft_categorygroups', (err, rows) => {
+			resolve(err ? [] : rows);
+		});
+	}),
+	new Promise(resolve => {
+		db.query('SELECT id, fieldId, fieldLayoutId, name, handle FROM craft_matrixblocktypes ORDER BY sortOrder', (err, rows) => {
+			resolve(err ? [] : rows);
+		});
+	}),
+	new Promise(resolve => {
+		db.query('SELECT id, fieldLayoutId, name, handle FROM craft_assetsources ORDER BY sortOrder', (err, rows) => {
+			resolve(err ? [] : rows);
+		});
+	}),
+	new Promise(resolve => {
+		db.query('SELECT id, type FROM craft_fieldlayouts', (err, rows) => {
+			resolve(err ? [] : rows);
+		});
+	}),
+	new Promise(resolve => {
+		db.query('SELECT id, layoutId, fieldId, required FROM craft_fieldlayoutfields ORDER BY sortOrder', (err, rows) => {
+			resolve(err ? [] : rows);
+		});
+	}),
+	new Promise(resolve => {
+		db.query('SELECT id, name, handle, context, instructions, translatable, type, settings FROM craft_fields', (err, rows) => {
+			resolve(err ? [] : rows);
+		});
+	}),
+])
+.spread((locales, globals, sections, types, categories, matrices, assets, layouts, layoutFields, fields) => {
+	console.timeEnd('t');
+
+	console.time('t');
+	
+	let userLayoutId = layouts.filter(l => l.type === 'User')[0].id;
+	let userFields = layoutFields.filter(lf => lf.layoutId == userLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]);
+	console.log(`User`, userFields.length);
+
+	globals.forEach(global => {
+		let globalFields = layoutFields.filter(lf => lf.layoutId == global.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]);
+		console.log(`Global ${global.handle}`, globalFields.length);
+	});
+
+	sections.forEach(section => {
+		let sectionTypes = types.filter(t => t.sectionId == section.id).map(type => {
+			let typeFields = layoutFields.filter(lf => lf.layoutId == type.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]);
+			return Object.assign({}, type, { fields: typeFields });
+		});
+
+		console.log(`Section ${section.handle} :`, sectionTypes.map(t => `${t.handle} (${t.fields.length})`).join(', '));
+	})
+
+	categories.forEach(category => {
+		let categoryFields = layoutFields.filter(lf => lf.layoutId == category.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]);
+		console.log(`Category ${category.handle}`, categoryFields.length);
+	});
+
+	assets.forEach(asset => {
+		let assetFields = layoutFields.filter(lf => lf.layoutId == asset.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]);
+		console.log(`Asset ${asset.handle}`, assetFields.length);
+	});
+
+	fields.filter(f => f.type == 'Matrix').forEach(field => {
+		let types = matrices.filter(m => m.fieldId == field.id).map(matrix => {
+			let matrixFields = layoutFields.filter(lf => lf.layoutId == matrix.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]);
+			return Object.assign({}, matrix, { fields: matrixFields });
+		});
+		console.log(`Matrix ${field.handle} :`, types.map(t => `${t.handle} (${t.fields.length})`).join(', '));
+	});
+
+})
+.then(() => {
+	console.timeEnd('t');
+	db.end();
+})
