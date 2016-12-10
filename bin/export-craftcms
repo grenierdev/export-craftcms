@@ -20,7 +20,8 @@ const db = MySQL.createPool({
 	port: argv.port || 3306,
 	user: argv.user,
 	password: argv.pass,
-	database: argv.db
+	database: argv.db,
+	charset: 'utf8'
 });
 
 Promise.all([
@@ -74,13 +75,150 @@ Promise.all([
 			resolve(err ? [] : rows);
 		});
 	}),
+	new Promise(resolve => {
+		db.query('SELECT id, fieldId, fieldLayoutId FROM craft_supertableblocktypes', (err, rows) => {
+			resolve(err ? [] : rows);
+		});
+	}),
 ])
-.spread((locales, globals, sections, types, categories, matrices, assets, layouts, layoutFields, fields) => {
+.spread((locales, globals, sections, types, categories, matrices, assets, layouts, layoutFields, fields, superTables) => {
 
 	const outputField = (field) => {
 		let out = `${field.handle}: { `;
+		let type = null;
+		let settings = {};
+
+		try {
+			settings = typeof field.settings === 'string' ? JSON.parse(field.settings) : field.settings;
+			settings = settings || {};
+		} catch (e) {}
+
+		switch (field.type) {
+			case 'ID':
+				type = 'Type.String';
+				break;
+
+			case 'Groups':
+				try {
+					type = settings.limit === "" || settings.limit > 1 ? 'new Type.ListOf(Group)' : 'Group';
+				} catch (e) {
+					type = 'Group';
+				}
+				break;
+
+			case 'Users':
+				try {
+					type = settings.limit === "" || settings.limit > 1 ? 'new Type.ListOf(User)' : 'User';
+				}
+				catch (e) {
+					type = 'User';
+				}
+				break;
+
+			case 'Entries':
+				try {
+					// if (settings.sources == '*') {
+					// 	type = 'Section';
+					// }
+					// else {
+						
+					// }
+					type = settings.limit === "" || settings.limit > 1 ? `new Type.ListOf(Section)` : 'Section';
+				}
+				catch (e) {
+					throw new Error(`Could not find entries for "${settings.sources}".`);
+				}
+				break;
+
+			case 'Categories':
+				try {
+					let categoryId = settings.source.split(':')[1];
+					let category = categories.filter(c => c.id == categoryId)[0];
+					type = 'Category' + category.handle[0].toUpperCase() + category.handle.substr(1);
+				}
+				catch (e) {
+					throw new Error(`Could not find category for "${settings.source}".`);
+				}
+				break;
+
+			case 'Assets':
+				try {
+					// if (settings.sources == '*') {
+					// 	type = 'Asset';
+					// }
+					// else {
+
+					// }
+					type = settings.limit === "" || settings.limit > 1 ? `new Type.ListOf(Asset)` : 'Asset';
+				}
+				catch (e) {
+					throw new Error(`Could not find asset for "${settings.source}".`);
+				}
+				break;
+
+			case 'Folders':
+				type = 'Folder';
+				try {
+					type = settings.limit == null || settings.limit > 1 ? `new Type.ListOf(${type})` : type;
+				}
+				catch (e) {}
+				break;
+
+			case 'Matrix':
+				type = 'Matrix' + field.handle[0].toUpperCase() + field.handle.substr(1);
+				try {
+					type = settings.maxBlocks == null || settings.maxBlocks > 1 ? `new Type.ListOf(${type})` : type;
+				}
+				catch (e) {}
+				break;
+
+			// TODO Tags
+			// TODO Table
+
+			case 'SuperTable':
+				type = 'SuperTable' + field.handle[0].toUpperCase() + field.handle.substr(1);
+				try {
+					type = settings.maxRows == null || settings.maxRows > 1 ? `new Type.ListOf(${type})` : type;
+				}
+				catch (e) {}
+				break;
+
+			case 'PlainText':
+			case 'RichText':
+			case 'Color':
+			case 'Dropdown':
+			case 'RadioButtons':
+			case 'PositionSelect':
+				type = 'Type.String';
+				break;
+			case 'MultiSelect':
+				type = 'new Type.ListOf(Type.String)';
+				break;
+			case 'Lightswitch':
+				type = 'Type.Boolean';
+				break;
+			case 'Number':
+				type = 'Type.' + (settings.decimals == 0 ? 'Int' : 'Float');
+				break;
+			case 'Date':
+				type = 'Type.Date';
+				break;
+			
+			default:
+				if (settings.columnType && settings.columnType == 'text') {
+					type = 'Type.String';
+					break;
+				}
+				throw new Error(`Unknown field type ${field.type}.`);
+		}
+
+
+
+		if (field.translatable == "1") {
+			type = `new Type.Translatable(${type})`;
+		}
 		
-		out += `type: Type.String, `;
+		out += `type: ${type}, `;
 
 		if (field.required) {
 			out += `required: true, `;
@@ -105,8 +243,10 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 
 	let groupFields = [
 		{handle: 'id', type: 'ID', name: 'ID'},
-		{handle: 'handle', type: 'Text', required: true, name: 'Handle'},
-		{handle: 'name', type: 'Text', required: true, name: 'Name'}
+		{handle: 'handle', type: 'PlainText', required: true, name: 'Handle'},
+		{handle: 'name', type: 'PlainText', required: true, name: 'Name'},
+		{handle: 'dateCreated', type: 'Date', name: 'Created date'},
+		{handle: 'dateUpdated', type: 'Date', name: 'Updated date'}
 	];
 	process.stdout.write(`class Group extends Model {
 	static get schema () {
@@ -121,12 +261,14 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 	let userLayoutId = layouts.filter(l => l.type === 'User')[0].id;
 	let userFields = [
 		{handle: 'id', type: 'ID', name: 'ID'},
-		{handle: 'username', type: 'Text', required: true, name: 'Username'},
-		{handle: 'firstName', type: 'Text', name: 'First name'},
-		{handle: 'lastName', type: 'Text', name: 'Last name'},
-		{handle: 'email', type: 'Text', required: true, name: 'Email'},
-		{handle: 'preferredLocale', type: 'Locale', name: 'Preferred locale'},
-		{handle: 'groups', type: 'Group', name: 'Groups'},
+		{handle: 'username', type: 'PlainText', required: true, name: 'Username'},
+		{handle: 'firstName', type: 'PlainText', name: 'First name'},
+		{handle: 'lastName', type: 'PlainText', name: 'Last name'},
+		{handle: 'email', type: 'PlainText', required: true, name: 'Email'},
+		{handle: 'preferredLocale', type: 'PlainText', name: 'Preferred locale'},
+		{handle: 'groups', type: 'Groups', name: 'Groups', settings: { limit: "" }},
+		{handle: 'dateCreated', type: 'Date', name: 'Created date'},
+		{handle: 'dateUpdated', type: 'Date', name: 'Updated date'}
 	];
 	userFields.push.apply(userFields, layoutFields.filter(lf => lf.layoutId == userLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]));
 
@@ -149,12 +291,14 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 		let sectionTypes = types.filter(t => t.sectionId == section.id).map(type => {
 			let typeFields = [
 				{handle: 'id', type: 'ID', name: 'ID'},
-				{handle: 'slug', type: 'Text', name: 'Slug'},
-				{handle: 'title', type: 'Text', name: 'Title'},
-				{handle: 'author', type: 'User', name: 'Author'},
-				{handle: 'postDate', type: 'Datetime', name: 'Publish date'},
-				{handle: 'expiryDate', type: 'Datetime', name: 'Expire date'},
-				{handle: 'enabled', type: 'Boolean', name: 'Enabled'},
+				{handle: 'slug', type: 'PlainText', name: 'Slug'},
+				{handle: 'title', type: 'PlainText', name: 'Title'},
+				{handle: 'author', type: 'Users', name: 'Author', settings: { limit: 1, source: '*' }},
+				{handle: 'postDate', type: 'Date', name: 'Publish date'},
+				{handle: 'expiryDate', type: 'Date', name: 'Expire date'},
+				{handle: 'enabled', type: 'Lightswitch', name: 'Enabled'},
+				{handle: 'dateCreated', type: 'Date', name: 'Created date'},
+				{handle: 'dateUpdated', type: 'Date', name: 'Updated date'}
 			];
 			typeFields.push.apply(typeFields, layoutFields.filter(lf => lf.layoutId == type.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]));
 			return Object.assign({}, type, { fields: typeFields });
@@ -192,8 +336,10 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 	categories.forEach(category => {
 		let categoryFields = [
 			{handle: 'id', type: 'ID', name: 'ID'},
-			{handle: 'slug', type: 'Text', name: 'Slug'},
-			{handle: 'title', type: 'Text', name: 'Title'},
+			{handle: 'slug', type: 'PlainText', name: 'Slug'},
+			{handle: 'title', type: 'PlainText', name: 'Title'},
+			{handle: 'dateCreated', type: 'Date', name: 'Created date'},
+			{handle: 'dateUpdated', type: 'Date', name: 'Updated date'}
 		];
 		categoryFields.push.apply(categoryFields, layoutFields.filter(lf => lf.layoutId == category.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]));
 
@@ -214,11 +360,13 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 	assets.forEach(asset => {
 		let assetFields = [
 			{handle: 'id', type: 'ID', name: 'ID'},
-			{handle: 'filename', type: 'Text', name: 'Filename'},
-			{handle: 'folder', type: 'Folder', name: 'Folder'},
-			{handle: 'kind', type: 'Text', name: 'Kind'},
+			{handle: 'filename', type: 'PlainText', name: 'Filename'},
+			{handle: 'folder', type: 'Folders', name: 'Folder', settings: { limit: 1 }},
+			{handle: 'kind', type: 'PlainText', name: 'Kind'},
 			{handle: 'size', type: 'Number', name: 'Size'},
-			{handle: 'dateModified', type: 'Datetime', name: 'Modified date'},
+			{handle: 'dateModified', type: 'Date', name: 'Modified date'},
+			{handle: 'dateCreated', type: 'Date', name: 'Created date'},
+			{handle: 'dateUpdated', type: 'Date', name: 'Updated date'}
 		];
 		assetFields.push.apply(assetFields, layoutFields.filter(lf => lf.layoutId == asset.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]));
 		
@@ -249,6 +397,8 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 		let types = matrices.filter(m => m.fieldId == field.id).map(matrix => {
 			let matrixFields = [
 				{handle: 'id', type: 'ID', name: 'ID'},
+				{handle: 'dateCreated', type: 'Date', name: 'Created date'},
+				{handle: 'dateUpdated', type: 'Date', name: 'Updated date'}
 			];
 			matrixFields.push.apply(matrixFields, layoutFields.filter(lf => lf.layoutId == matrix.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]));
 			return Object.assign({}, matrix, { fields: matrixFields });
@@ -281,6 +431,30 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 
 `);
 		}
+	});
+
+	fields.filter(f => f.type == 'SuperTable').forEach(field => {
+
+		let tableFields = [
+			{handle: 'id', type: 'ID', name: 'ID'},
+			{handle: 'dateCreated', type: 'Date', name: 'Created date'},
+			{handle: 'dateUpdated', type: 'Date', name: 'Updated date'}
+		];
+
+		let layoutId = superTables.filter(st => st.fieldId == field.id)[0].fieldLayoutId;
+		tableFields.push.apply(tableFields, layoutFields.filter(lf => lf.layoutId == layoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]));
+
+		const tableHandle = field.handle[0].toUpperCase() + field.handle.substr(1);
+
+		process.stdout.write(`class SuperTable${tableHandle} extends Model {
+	static get schema () {
+		return {
+			${tableFields.map(field => outputField(field)).join(',\n\t\t\t')}
+		}
+	}
+}
+
+`);
 	});
 
 })
