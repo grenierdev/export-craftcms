@@ -71,7 +71,7 @@ Promise.all([
 		});
 	}),
 	new Promise(resolve => {
-		db.query('SELECT id, name, handle, context, instructions, translatable, type, settings FROM craft_fields', (err, rows) => {
+		db.query('SELECT id, name, handle, CONCAT("c.field_", handle) as "column", context, instructions, translatable, type, settings FROM craft_fields', (err, rows) => {
 			resolve(err ? [] : rows);
 		});
 	}),
@@ -83,11 +83,14 @@ Promise.all([
 ])
 .spread((locales, globals, sections, types, categories, matrices, assets, layouts, layoutFields, fields, superTables) => {
 
-	const outputField = (field) => {
-		let out = `${field.handle}: { `;
-		let type = null;
-		let settings = {};
+	const models = [];
+	const outputRecords = [];
+	const outputModels = [];
 
+	const fieldToType = (field) => {
+		let type = null;
+		let relation = null;
+		let settings;
 		try {
 			settings = typeof field.settings === 'string' ? JSON.parse(field.settings) : field.settings;
 			settings = settings || {};
@@ -100,10 +103,11 @@ Promise.all([
 
 			case 'Groups':
 				try {
-					type = settings.limit === "" || settings.limit > 1 ? 'new Type.ListOf(Group)' : 'Group';
+					type = settings.limit === "" || settings.limit > 1 ? 'new Type.ListOf(UserGroup)' : 'UserGroup';
 				} catch (e) {
-					type = 'Group';
+					type = 'UserGroup';
 				}
+				relation = 'UserGroup';
 				break;
 
 			case 'Users':
@@ -113,21 +117,43 @@ Promise.all([
 				catch (e) {
 					type = 'User';
 				}
+				relation = 'User';
 				break;
 
 			case 'Entries':
 				try {
-					// if (settings.sources == '*') {
-					// 	type = 'Section';
-					// }
-					// else {
-						
-					// }
-					type = settings.limit === "" || settings.limit > 1 ? `new Type.ListOf(Section)` : 'Section';
+					if (settings.sources == '*') {
+						type = 'Section';
+					}
+					else if (settings.sources.length == 1) {
+						let id = settings.sources[0].substr(8);
+						let section = sections.filter(section => section.id == id)[0];
+						type = `Section${section.handle[0].toUpperCase() + section.handle.substr(1)}`;
+					}
+					else {
+						type = field.handle[0].toUpperCase() + field.handle.substr(1) + `Sections`;
+						if (models.indexOf(type) === -1) {
+							models.push(type);
+							outputModels.push(`class ${type} extends UnionModel {
+	static get models () {
+		return [${settings.sources.map(source => {
+			const id = source.substr(8);
+			const section = sections.filter(section => section.id == id)[0];
+			return `Section${section.handle[0].toUpperCase() + section.handle.substr(1)}`;
+		}).join(', ')}];
+	}
+}
+
+`);
+							outputRecords.push(`domain.registerRecord(adapter, ${type}, {})`);
+						}
+					}
+					type = settings.limit === "" || settings.limit > 1 ? `new Type.ListOf(${type})` : type;
 				}
 				catch (e) {
-					throw new Error(`Could not find entries for "${settings.sources}".`);
+					throw new Error(`Could not find entries for "${settings.sources}" : ${e.message}`);
 				}
+				relation = type;
 				break;
 
 			case 'Categories':
@@ -135,6 +161,8 @@ Promise.all([
 					let categoryId = settings.source.split(':')[1];
 					let category = categories.filter(c => c.id == categoryId)[0];
 					type = 'Category' + category.handle[0].toUpperCase() + category.handle.substr(1);
+					relation = type;
+					type = `new Type.ListOf(${type})`;
 				}
 				catch (e) {
 					throw new Error(`Could not find category for "${settings.source}".`);
@@ -143,21 +171,43 @@ Promise.all([
 
 			case 'Assets':
 				try {
-					// if (settings.sources == '*') {
-					// 	type = 'Asset';
-					// }
-					// else {
+					if (settings.sources == '*') {
+						type = 'Asset';
+					}
+					else if (settings.sources.length == 1) {
+						let id = settings.sources[0].substr(7);
+						let asset = assets.filter(asset => asset.id == id)[0];
+						type = `Asset${asset.handle[0].toUpperCase() + asset.handle.substr(1)}`;
+					}
+					else {
+						type = field.handle[0].toUpperCase() + field.handle.substr(1) + `Assets`;
+						if (models.indexOf(type) === -1) {
+							models.push(type);
+							outputModels.push(`class ${type} extends UnionModel {
+	static get models () {
+		return [${settings.sources.map(source => {
+			const id = source.substr(7);
+			const asset = assets.filter(asset => asset.id == id)[0];
+			return `Asset${asset.handle[0].toUpperCase() + asset.handle.substr(1)}`;
+		}).join(', ')}];
+	}
+}
 
-					// }
-					type = settings.limit === "" || settings.limit > 1 ? `new Type.ListOf(Asset)` : 'Asset';
+`);
+							outputRecords.push(`domain.registerRecord(adapter, ${type}, {})`);
+						}
+					}
+					type = settings.limit === "" || settings.limit > 1 ? `new Type.ListOf(${type})` : type;
 				}
 				catch (e) {
-					throw new Error(`Could not find asset for "${settings.source}".`);
+					throw new Error(`Could not find asset for "${settings.source}" : ${e.message}`);
 				}
+				relation = type;
 				break;
 
-			case 'Folders':
-				type = 'Folder';
+			case 'AssetFolders':
+				type = 'AssetFolder';
+				relation = 'AssetFolder';
 				try {
 					type = settings.limit == null || settings.limit > 1 ? `new Type.ListOf(${type})` : type;
 				}
@@ -166,6 +216,7 @@ Promise.all([
 
 			case 'Matrix':
 				type = 'Matrix' + field.handle[0].toUpperCase() + field.handle.substr(1);
+				relation = type;
 				try {
 					type = settings.maxBlocks == null || settings.maxBlocks > 1 ? `new Type.ListOf(${type})` : type;
 				}
@@ -177,6 +228,7 @@ Promise.all([
 
 			case 'SuperTable':
 				type = 'SuperTable' + field.handle[0].toUpperCase() + field.handle.substr(1);
+				relation = type;
 				try {
 					type = settings.maxRows == null || settings.maxRows > 1 ? `new Type.ListOf(${type})` : type;
 				}
@@ -211,8 +263,12 @@ Promise.all([
 				}
 				throw new Error(`Unknown field type ${field.type}.`);
 		}
+		return { type, relation };
+	};
 
-
+	const fieldToDefinition = (field) => {
+		let out = `${field.handle}: { `;
+		let type = fieldToType(field).type;
 
 		if (field.translatable == "1") {
 			type = `new Type.Translatable(${type})`;
@@ -235,6 +291,65 @@ Promise.all([
 		return `${out} }`;
 	};
 
+	const fieldToRelation = (field) => {
+		switch (field.type) {
+			case 'Assets':
+			case 'Entries':
+			case 'Categories':
+				return `SELECT sourceId AS "id", "${field.handle}" AS "key", targetId AS "value" FROM craft_relations WHERE fieldId = ${field.id} AND sourceId IN (\${rowIds.join(', ')}) ORDER BY sortOrder`;
+
+			case 'Matrix':
+				return `SELECT ownerId AS "id", "${field.handle}" AS "key", id AS "value" FROM craft_matrixblocks WHERE fieldId = ${field.id} AND ownerId IN (\${rowIds.join(', ')}) ORDER BY sortOrder`
+
+			case 'SuperTable':
+				return `SELECT ownerId AS "id", "${field.handle}" AS "key", id AS "value" FROM craft_supertableblocks WHERE fieldId = ${field.id} AND ownerId IN (\${rowIds.join(', ')}) ORDER BY sortOrder`
+
+			// case 'Users':
+			// case 'Folders':
+
+			// TODO Tags
+			// TODO Table
+
+			default:
+				throw new Error(`Type ${field.type} is not a relation.`);
+		}
+	}
+
+	const relationToProperty = (field) => {
+		let single;
+		let settings;
+		try {
+			settings = typeof field.settings === 'string' ? JSON.parse(field.settings) : field.settings;
+			settings = settings || {};
+		} catch (e) {}
+
+		switch (field.type) {
+			case 'Groups':
+			case 'Assets':
+			case 'Entries':
+			case 'Categories':
+			case 'Users':
+				single = settings.limit == 1;
+				return `row.${field.handle} = relations.filter(rel => rel.key === '${field.handle}').map(rel => rel.value)${single ? `.shift()` : ``};`;
+
+			case 'Matrix':
+				single = settings.maxBlocks == 1;
+				return `row.${field.handle} = relations.filter(rel => rel.key === '${field.handle}').map(rel => rel.value)${single ? `.shift()` : ``};`;
+
+			case 'SuperTable':
+				single = settings.maxRows == 1;
+				return `row.${field.handle} = relations.filter(rel => rel.key === '${field.handle}').map(rel => rel.value)${single ? `.shift()` : ``};`;
+
+			// case 'Folders':
+			
+			// TODO Tags
+			// TODO Table
+
+			default:
+				throw new Error(`Type ${field.type} is not a relation.`);
+		}
+	}
+
 	process.stdout.write(`"use strict"
 
 const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
@@ -242,63 +357,131 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 `);
 
 	let groupFields = [
-		{handle: 'id', type: 'ID', name: 'ID'},
-		{handle: 'handle', type: 'PlainText', required: true, name: 'Handle'},
-		{handle: 'name', type: 'PlainText', required: true, name: 'Name'},
-		{handle: 'dateCreated', type: 'Date', name: 'Created date'},
-		{handle: 'dateUpdated', type: 'Date', name: 'Updated date'}
+		{handle: 'id', column: 'g.id', type: 'ID', name: 'ID'},
+		{handle: 'handle', column: 'g.handle', type: 'PlainText', required: true, name: 'Handle'},
+		{handle: 'name', column: 'g.name', type: 'PlainText', required: true, name: 'Name'},
+		{handle: 'dateCreated', column: 'g.dateCreated', type: 'Date', name: 'Created date'},
+		{handle: 'dateUpdated', column: 'g.dateUpdated', type: 'Date', name: 'Updated date'}
 	];
-	process.stdout.write(`class Group extends Model {
+	models.push(`UserGroup`);
+	outputModels.push(`class UserGroup extends Model {
 	static get schema () {
 		return {
-			${groupFields.map(field => outputField(field)).join(',\n\t\t\t')}
+			${groupFields.map(field => fieldToDefinition(field)).join(',\n\t\t\t')}
 		}
 	}
 }
 
 `);
+	outputRecords.push(`domain.registerRecord(adapter, UserGroup, {
+	defaultLocale: locale,
+	propertyMap: {
+		${groupFields.map(f => `'${f.handle}': '${f.column}'`).join(",\n\t\t")}
+	},
+	selectQuery: ({ where, order, limit, offset }, query, options, configs) => {
+		return \`SELECT ${groupFields.map(f => `${f.column} AS "${f.handle}"`).join(", ")} \` +
+		\`FROM craft_usergroups AS g \` +
+		(where ? \` WHERE \${where} \` : \`\`) +
+		(order ? \` ORDER BY \${order} \` : \`\`) +
+		(limit ? \`LIMIT \${limit} \` : \`\`) +
+		(offset ? \`OFFSET \${offset} \` : \`\`);
+	},
+	deleteQuery: ({ where, limit, offset }, query, options, configs) => {
+		return \`DELETE g \` +
+		\`FROM craft_usergroups AS g \` +
+		(where ? \`WHERE \${where}\` : \`\`) +
+		(limit ? \`LIMIT \${limit} \` : \`\`) +
+		(offset ? \`OFFSET \${offset} \` : \`\`);
+	}
+})`);
 
 	let userLayoutId = layouts.filter(l => l.type === 'User')[0].id;
 	let userFields = [
-		{handle: 'id', type: 'ID', name: 'ID'},
-		{handle: 'username', type: 'PlainText', required: true, name: 'Username'},
-		{handle: 'firstName', type: 'PlainText', name: 'First name'},
-		{handle: 'lastName', type: 'PlainText', name: 'Last name'},
-		{handle: 'email', type: 'PlainText', required: true, name: 'Email'},
-		{handle: 'preferredLocale', type: 'PlainText', name: 'Preferred locale'},
-		{handle: 'groups', type: 'Groups', name: 'Groups', settings: { limit: "" }},
-		{handle: 'dateCreated', type: 'Date', name: 'Created date'},
-		{handle: 'dateUpdated', type: 'Date', name: 'Updated date'}
+		{handle: 'id', column: 'u.id', type: 'ID', name: 'ID'},
+		{handle: 'username', column: 'u.username', type: 'PlainText', required: true, name: 'Username'},
+		{handle: 'firstName', column: 'u.firstName', type: 'PlainText', name: 'First name'},
+		{handle: 'lastName', column: 'u.lastName', type: 'PlainText', name: 'Last name'},
+		{handle: 'email', column: 'u.email', type: 'PlainText', required: true, name: 'Email'},
+		{handle: 'preferredLocale', column: 'u.preferredLocale', type: 'PlainText', name: 'Preferred locale'},
+		{handle: 'groups', column: 'g.id', type: 'Groups', name: 'Groups', settings: { limit: "" }},
+		{handle: 'dateCreated', column: 'u.dateCreated', type: 'Date', name: 'Created date'},
+		{handle: 'dateUpdated', column: 'u.dateUpdated', type: 'Date', name: 'Updated date'}
 	];
 	userFields.push.apply(userFields, layoutFields.filter(lf => lf.layoutId == userLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]));
 
-	process.stdout.write(`class User extends Model {
+	models.push(`User`);
+	outputModels.push(`class User extends Model {
 	static get schema () {
 		return {
-			${userFields.map(field => outputField(field)).join(',\n\t\t\t')}
+			${userFields.map(field => fieldToDefinition(field)).join(',\n\t\t\t')}
 		}
 	}
 }
 
 `);
+	outputRecords.push(`domain.registerRecord(adapter, User, {
+	defaultLocale: locale,
+	propertyMap: {
+		${userFields.map(f => `'${f.handle}': '${f.column}'`).join(",\n\t\t")}
+	},
+	selectQuery: ({ where, order, limit, offset }, query, options, configs) => {
+		return \`SELECT ${userFields.filter(f => fieldToType(f).relation === null).map(f => `${f.column} AS "${f.handle}"`).join(", ")} \` +
+		\`FROM craft_users AS u \` +
+		\`LEFT JOIN craft_usergroups_users AS g ON g.userId = u.id \` +
+		\`LEFT JOIN craft_content AS c ON c.elementId = u.id AND c.locale = "\${locale}" \` +
+		(where ? \`WHERE \${where} \` : \`\`) +
+		\`GROUP BY u.id \` +
+		(order ? \`ORDER BY \${order} \` : \`\`) +
+		(limit ? \`LIMIT \${limit} \` : \`\`) +
+		(offset ? \`OFFSET \${offset} \` : \`\`);
+	},
+	deleteQuery: ({ where, limit, offset }, query, options, configs) => {
+		return \`DELETE u \` +
+		\`FROM craft_users AS u \` +
+		(where ? \`WHERE \${where}\` : \`\`) +
+		(limit ? \`LIMIT \${limit} \` : \`\`) +
+		(offset ? \`OFFSET \${offset} \` : \`\`);
+	},
+	${userFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'groups').length > 0 ? `onRows: (rows, query, options, configs) => {
+		if (rows.length === 0) return Promise.resolve(rows);
+		return new Promise((resolve, reject) => {
+			const driver = adapter.getDriver();
+			const rowIds = rows.map(row => row.id);
+			driver.query(\`
+(${userFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'groups').map(f => fieldToRelation(f)).concat([`SELECT userId AS "id", "groups" AS "key", groupId AS "value" FROM craft_usergroups_users WHERE userId IN (\${rowIds.join(', ')})`]).join(")\nUNION\n(")})
+\`, (err, relations) => {
+				if (err) return reject(err);
+
+				rows.forEach(row => {
+					${userFields.filter(f => fieldToType(f).relation !== null).map(field => relationToProperty(field)).join("\n\t\t\t\t\t")}
+				});
+
+				return resolve(rows);
+			});
+		});
+	}` : ``}
+})`);
 
 	// globals.forEach(global => {
 	// 	let globalFields = layoutFields.filter(lf => lf.layoutId == global.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]);
 	// 	console.log(`Global ${global.handle}`, globalFields.length);
 	// });
 
+	let sectionHandles = [];
+
 	sections.forEach(section => {
 		let sectionTypes = types.filter(t => t.sectionId == section.id).map(type => {
 			let typeFields = [
-				{handle: 'id', type: 'ID', name: 'ID'},
-				{handle: 'slug', type: 'PlainText', name: 'Slug'},
-				{handle: 'title', type: 'PlainText', name: 'Title'},
-				{handle: 'author', type: 'Users', name: 'Author', settings: { limit: 1, source: '*' }},
-				{handle: 'postDate', type: 'Date', name: 'Publish date'},
-				{handle: 'expiryDate', type: 'Date', name: 'Expire date'},
-				{handle: 'enabled', type: 'Lightswitch', name: 'Enabled'},
-				{handle: 'dateCreated', type: 'Date', name: 'Created date'},
-				{handle: 'dateUpdated', type: 'Date', name: 'Updated date'}
+				{handle: 'id', column: 'el.id', type: 'ID', name: 'ID'},
+				{handle: 'slug', column: 'eli.slug', type: 'PlainText', name: 'Slug'},
+				{handle: 'title', column: 'c.title', type: 'PlainText', name: 'Title'},
+				{handle: 'author', column: 'e.authorId', type: 'Users', name: 'Author', settings: { limit: 1, source: '*' }},
+				{handle: 'postDate', column: 'e.postDate', type: 'Date', name: 'Publish date'},
+				{handle: 'expiryDate', column: 'e.expiryDate', type: 'Date', name: 'Expire date'},
+				{handle: 'enabled', column: 'el.enabled', type: 'Lightswitch', name: 'Enabled'},
+				{handle: 'archived', column: 'el.archived', type: 'Lightswitch', name: 'Archived'},
+				{handle: 'dateCreated', column: 'el.dateCreated', type: 'Date', name: 'Created date'},
+				{handle: 'dateUpdated', column: 'el.dateUpdated', type: 'Date', name: 'Updated date'}
 			];
 			typeFields.push.apply(typeFields, layoutFields.filter(lf => lf.layoutId == type.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]));
 			return Object.assign({}, type, { fields: typeFields });
@@ -310,97 +493,299 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 
 		sectionTypes.forEach(type => {
 			const typeHandle = sectionTypes.length == 1 ? sectionHandle : sectionHandle + type.handle[0].toUpperCase() + type.handle.substr(1);
+			sectionHandles.push(`Section${typeHandle}`);
 			typeHandles.push(`Section${typeHandle}`);
-			process.stdout.write(`class Section${typeHandle} extends Model {
+			models.push(`Section${typeHandle}`);
+			outputModels.push(`class Section${typeHandle} extends Model {
 	static get schema () {
 		return {
-			${type.fields.map(field => outputField(field)).join(',\n\t\t\t')}
+			${type.fields.map(field => fieldToDefinition(field)).join(',\n\t\t\t')}
 		}
 	}
 }
 
 `);
+			outputRecords.push(`domain.registerRecord(adapter, Section${typeHandle}, {
+	defaultLocale: locale,
+	propertyMap: {
+		${type.fields.map(f => `'${f.handle}': '${f.column}'`).join(",\n\t\t")}
+	},
+	selectQuery: ({ where, order, limit, offset }, query, options, configs) => {
+		return \`SELECT ${type.fields.filter(f => fieldToType(f).relation === null).map(f => `${f.column} AS "${f.handle}"`).join(", ")} \` +
+		\`FROM craft_elements AS el \` +
+		\`LEFT JOIN craft_entries AS e ON e.id = el.id \` + 
+		\`LEFT JOIN craft_elements_i18n AS eli ON eli.elementId = e.id AND eli.locale = "\${locale}" \` +
+		\`LEFT JOIN craft_content AS c ON c.elementId = el.id AND c.locale = "\${locale}" \` +
+		\`WHERE e.sectionId = ${section.id} AND e.typeId = ${type.id} \${where ? \`AND (\${where}) \` : \`\`}\` +
+		\`GROUP BY el.id \` +
+		(order ? \`ORDER BY \${order} \` : \`\`) +
+		(limit ? \`LIMIT \${limit} \` : \`\`) +
+		(offset ? \`OFFSET \${offset} \` : \`\`);
+	},
+	deleteQuery: ({ where, limit, offset }, query, options, configs) => {
+		return \`DELETE el \` +
+		\`FROM craft_elements AS el \` +
+		(where ? \`WHERE \${where}\` : \`\`) +
+		(limit ? \`LIMIT \${limit} \` : \`\`) +
+		(offset ? \`OFFSET \${offset} \` : \`\`);
+	},
+	${type.fields.filter(f => fieldToType(f).relation !== null && f.handle !== 'author').length > 0 ? `onRows: (rows, query, options, configs) => {
+		if (rows.length === 0) return Promise.resolve(rows);
+		return new Promise((resolve, reject) => {
+			const driver = adapter.getDriver();
+			const rowIds = rows.map(row => row.id);
+			driver.query(\`
+(${type.fields.filter(f => fieldToType(f).relation !== null && f.handle !== 'author').map(f => fieldToRelation(f)).join(")\nUNION\n(")})
+\`, (err, relations) => {
+				if (err) return reject(err);
+
+				rows.forEach(row => {
+					${type.fields.filter(f => fieldToType(f).relation !== null && f.handle !== 'author').map(field => relationToProperty(field)).join("\n\t\t\t\t\t")}
+				});
+
+				return resolve(rows);
+			});
+		});
+	}` : ``}
+})`);
 		});
 
 		if (typeHandles.length > 1) {
-			process.stdout.write(`class Section${sectionHandle} extends UnionModel {
+			models.push(`Section${sectionHandle}`);
+			outputModels.push(`class Section${sectionHandle} extends UnionModel {
 	static get models () {
 		return [${typeHandles.join(', ')}];
 	}
 }
 
 `);
+			outputRecords.push(`domain.registerRecord(adapter, Section${sectionHandle}, {})`);
 		}
-	})
+	});
+
+	models.push(`Section`);
+	outputModels.push(`class Section extends UnionModel {
+	static get models () {
+		return [${sectionHandles.join(', ')}];
+	}
+}
+
+`);
+	outputRecords.push(`domain.registerRecord(adapter, Section, {})`);
+
+	const categoryHandles = [];
 
 	categories.forEach(category => {
 		let categoryFields = [
-			{handle: 'id', type: 'ID', name: 'ID'},
-			{handle: 'slug', type: 'PlainText', name: 'Slug'},
-			{handle: 'title', type: 'PlainText', name: 'Title'},
-			{handle: 'dateCreated', type: 'Date', name: 'Created date'},
-			{handle: 'dateUpdated', type: 'Date', name: 'Updated date'}
+			{handle: 'id', column: 'el.id', type: 'ID', name: 'ID'},
+			{handle: 'title', column: 'c.title', type: 'PlainText', name: 'Title'},
+			{handle: 'dateCreated', column: 'ca.dateCreated', type: 'Date', name: 'Created date'},
+			{handle: 'dateUpdated', column: 'ca.dateUpdated', type: 'Date', name: 'Updated date'}
 		];
 		categoryFields.push.apply(categoryFields, layoutFields.filter(lf => lf.layoutId == category.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]));
 
 		const handle = category.handle[0].toUpperCase() + category.handle.substr(1);
-		process.stdout.write(`class Category${handle} extends Model {
+		models.push(`Category${handle}`);
+		categoryHandles.push(`Category${handle}`);
+		outputModels.push(`class Category${handle} extends Model {
 	static get schema () {
 		return {
-			${categoryFields.map(field => outputField(field)).join(',\n\t\t\t')}
+			${categoryFields.map(field => fieldToDefinition(field)).join(',\n\t\t\t')}
 		}
 	}
 }
 
 `);
+		outputRecords.push(`domain.registerRecord(adapter, Category${handle}, {
+	defaultLocale: locale,
+	propertyMap: {
+		${categoryFields.map(f => `'${f.handle}': '${f.column}'`).join(",\n\t\t")}
+	},
+	selectQuery: ({ where, order, limit, offset }, query, options, configs) => {
+		return \`SELECT ${categoryFields.filter(f => fieldToType(f).relation === null).map(f => `${f.column} AS "${f.handle}"`).join(", ")} \` +
+		\`FROM craft_elements AS el \` +
+		\`LEFT JOIN craft_categories AS ca ON ca.id = el.id \` + 
+		\`LEFT JOIN craft_elements_i18n AS eli ON eli.elementId = e.id AND eli.locale = "\${locale}" \` +
+		\`LEFT JOIN craft_content AS c ON c.elementId = el.id AND c.locale = "\${locale}" \` +
+		\`WHERE c.groupId = ${category.id} \${where ? \`AND (\${where}) \` : \`\`}\` +
+		\`GROUP BY el.id \` +
+		(order ? \`ORDER BY \${order} \` : \`\`) +
+		(limit ? \`LIMIT \${limit} \` : \`\`) +
+		(offset ? \`OFFSET \${offset} \` : \`\`);
+	},
+	deleteQuery: ({ where, limit, offset }, query, options, configs) => {
+		return \`DELETE el \` +
+		\`FROM craft_elements AS el \` +
+		(where ? \`WHERE \${where}\` : \`\`) +
+		(limit ? \`LIMIT \${limit} \` : \`\`) +
+		(offset ? \`OFFSET \${offset} \` : \`\`);
+	},
+	${categoryFields.filter(f => fieldToType(f).relation !== null).length > 0 ? `onRows: (rows, query, options, configs) => {
+		if (rows.length === 0) return Promise.resolve(rows);
+		return new Promise((resolve, reject) => {
+			const driver = adapter.getDriver();
+			const rowIds = rows.map(row => row.id);
+			driver.query(\`
+(${categoryFields.filter(f => fieldToType(f).relation !== null).map(f => fieldToRelation(f)).join(")\nUNION\n(")})
+\`, (err, relations) => {
+				if (err) return reject(err);
+
+				rows.forEach(row => {
+					${categoryFields.filter(f => fieldToType(f).relation !== null).map(field => relationToProperty(field)).join("\n\t\t\t\t\t")}
+				});
+
+				return resolve(rows);
+			});
+		});
+	}` : ``}
+})`);
 	});
 
-	const assetHandles = [];
+	models.push(`Category`);
+	outputModels.push(`class Category extends UnionModel {
+	static get models () {
+		return [${categoryHandles.join(', ')}];
+	}
+}
 
+`);
+	outputRecords.push(`domain.registerRecord(adapter, Category, {})`);
+
+	let folderFields = [
+		{handle: 'id', column: 'f.id', type: 'ID', name: 'ID'},
+		{handle: 'name', column: 'f.name', type: 'PlainText', name: 'Name'},
+		{handle: 'parent', column: 'f.parentId', type: 'AssetFolders', name: 'Parent', settings: { limit: 1 }},
+		{handle: 'dateCreated', column: 'f.dateCreated', type: 'Date', name: 'Created date'},
+		{handle: 'dateUpdated', column: 'f.dateUpdated', type: 'Date', name: 'Updated date'}
+	];
+	models.push(`AssetFolder`);
+	outputModels.push(`class AssetFolder extends Model {
+	static get schema () {
+		return {
+			${folderFields.map(field => fieldToDefinition(field)).join(',\n\t\t\t')}
+		}
+	}
+}
+
+`);
+	outputRecords.push(`domain.registerRecord(adapter, AssetFolder, {
+	defaultLocale: locale,
+	propertyMap: {
+		${folderFields.map(f => `'${f.handle}': '${f.column}'`).join(",\n\t\t")}
+	},
+	selectQuery: ({ where, order, limit, offset }, query, options, configs) => {
+		return \`SELECT ${folderFields.map(f => `${f.column} AS "${f.handle}"`).join(", ")} \` +
+		\`FROM craft_assetfolders AS f \` +
+		(where ? \`WHERE \${where}\` : \`\`) +
+		(order ? \`ORDER BY \${order} \` : \`\`) +
+		(limit ? \`LIMIT \${limit} \` : \`\`) +
+		(offset ? \`OFFSET \${offset} \` : \`\`);
+	},
+	deleteQuery: ({ where, limit, offset }, query, options, configs) => {
+		return \`DELETE f \` +
+		\`FROM craft_assetfolders AS f \` +
+		(where ? \`WHERE \${where}\` : \`\`) +
+		(limit ? \`LIMIT \${limit} \` : \`\`) +
+		(offset ? \`OFFSET \${offset} \` : \`\`);
+	}
+})`);
+
+	const assetHandles = [];
 	assets.forEach(asset => {
 		let assetFields = [
-			{handle: 'id', type: 'ID', name: 'ID'},
-			{handle: 'filename', type: 'PlainText', name: 'Filename'},
-			{handle: 'folder', type: 'Folders', name: 'Folder', settings: { limit: 1 }},
-			{handle: 'kind', type: 'PlainText', name: 'Kind'},
-			{handle: 'size', type: 'Number', name: 'Size'},
-			{handle: 'dateModified', type: 'Date', name: 'Modified date'},
-			{handle: 'dateCreated', type: 'Date', name: 'Created date'},
-			{handle: 'dateUpdated', type: 'Date', name: 'Updated date'}
+			{handle: 'id', column: 'a.id', type: 'ID', name: 'ID'},
+			{handle: 'filename', column: 'a.filename', type: 'PlainText', name: 'Filename'},
+			{handle: 'folder', column: 'a.folderId', type: 'AssetFolders', name: 'Folder', settings: { limit: 1 }},
+			{handle: 'kind', column: 'a.kind', type: 'PlainText', name: 'Kind'},
+			{handle: 'size', column: 'a.size', type: 'Number', name: 'Size'},
+			{handle: 'dateModified', column: 'a.dateModified', type: 'Date', name: 'Modified date'},
+			{handle: 'dateCreated', column: 'a.dateCreated', type: 'Date', name: 'Created date'},
+			{handle: 'dateUpdated', column: 'a.dateUpdated', type: 'Date', name: 'Updated date'}
 		];
 		assetFields.push.apply(assetFields, layoutFields.filter(lf => lf.layoutId == asset.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]));
 		
 		const handle = asset.handle[0].toUpperCase() + asset.handle.substr(1);
 		assetHandles.push(`Asset${handle}`);
-		process.stdout.write(`class Asset${handle} extends Model {
+		models.push(`Asset${handle}`);
+		outputModels.push(`class Asset${handle} extends Model {
 	static get schema () {
 		return {
-			${assetFields.map(field => outputField(field)).join(',\n\t\t\t')}
+			${assetFields.map(field => fieldToDefinition(field)).join(',\n\t\t\t')}
 		}
 	}
 }
 
 `);
+		outputRecords.push(`domain.registerRecord(adapter, Asset${handle}, {
+	defaultLocale: locale,
+	propertyMap: {
+		${assetFields.map(f => `'${f.handle}': '${f.column}'`).join(",\n\t\t")}
+	},
+	selectQuery: ({ where, order, limit, offset }, query, options, configs) => {
+		return \`SELECT ${assetFields.filter(f => fieldToType(f).relation === null || f.handle === 'folder').map(f => `${f.column} AS "${f.handle}"`).join(", ")} \` +
+		\`FROM craft_assetfiles AS a \` +
+		\`LEFT JOIN craft_content AS c ON c.elementId = a.id AND c.locale = "\${locale}" \` +
+		\`WHERE a.sourceId = ${asset.id} \${where ? \`AND (\${where}) \` : \`\`}\` +
+		\`GROUP BY a.id \` +
+		(order ? \`ORDER BY \${order} \` : \`\`) +
+		(limit ? \`LIMIT \${limit} \` : \`\`) +
+		(offset ? \`OFFSET \${offset} \` : \`\`);
+	},
+	deleteQuery: ({ where, limit, offset }, query, options, configs) => {
+		return \`DELETE a \` +
+		\`FROM craft_assetfiles AS a \` +
+		(where ? \`WHERE \${where}\` : \`\`) +
+		(limit ? \`LIMIT \${limit} \` : \`\`) +
+		(offset ? \`OFFSET \${offset} \` : \`\`);
+	},
+	${assetFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'folder').length > 0 ? `onRows: (rows, query, options, configs) => {
+		if (rows.length === 0) return Promise.resolve(rows);
+		return new Promise((resolve, reject) => {
+			const driver = adapter.getDriver();
+			const rowIds = rows.map(row => row.id);
+			driver.query(\`
+(${assetFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'folder').map(f => fieldToRelation(f)).join(")\nUNION\n(")})
+\`, (err, relations) => {
+				if (err) return reject(err);
+
+				rows.forEach(row => {
+					${assetFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'folder').map(field => relationToProperty(field)).join("\n\t\t\t\t\t")}
+				});
+
+				return resolve(rows);
+			});
+		});
+	}` : ``}
+})`);
 	});
 
-	if (assetHandles.length > 0) {
-			process.stdout.write(`class Asset extends UnionModel {
+	models.push(`Asset`);
+	outputModels.push(`class Asset extends UnionModel {
 	static get models () {
 		return [${assetHandles.join(', ')}];
 	}
 }
 
 `);
-	}
+	outputRecords.push(`domain.registerRecord(adapter, Asset, {})`);
 
 	fields.filter(f => f.type == 'Matrix').forEach(field => {
 		let types = matrices.filter(m => m.fieldId == field.id).map(matrix => {
 			let matrixFields = [
-				{handle: 'id', type: 'ID', name: 'ID'},
-				{handle: 'dateCreated', type: 'Date', name: 'Created date'},
-				{handle: 'dateUpdated', type: 'Date', name: 'Updated date'}
+				{handle: 'id', column: 'b.id', type: 'ID', name: 'ID'},
+				{handle: 'dateCreated', column: 'b.dateCreated', type: 'Date', name: 'Created date'},
+				{handle: 'dateUpdated', column: 'b.dateUpdated', type: 'Date', name: 'Updated date'}
 			];
-			matrixFields.push.apply(matrixFields, layoutFields.filter(lf => lf.layoutId == matrix.fieldLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]));
+			matrixFields.push.apply(
+				matrixFields,
+				layoutFields
+					.filter(lf => lf.layoutId == matrix.fieldLayoutId)
+					.map(lf => fields.filter(f => lf.fieldId == f.id)[0])
+					.map(f => {
+						f.column = f.column.replace('c.field_', `c.field_${matrix.handle}_`);
+						return f;
+					})
+			);
 			return Object.assign({}, matrix, { fields: matrixFields });
 		});
 
@@ -411,51 +796,155 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 		types.forEach(type => {
 			const typeHandle = types.length == 1 ? matrixHandle : matrixHandle + type.handle[0].toUpperCase() + type.handle.substr(1);
 			typeHandles.push(`Matrix${typeHandle}`);
-			process.stdout.write(`class Matrix${typeHandle} extends Model {
+			models.push(`Matrix${typeHandle}`);
+			outputModels.push(`class Matrix${typeHandle} extends Model {
 	static get schema () {
 		return {
-			${type.fields.map(field => outputField(field)).join(',\n\t\t\t')}
+			${type.fields.map(field => fieldToDefinition(field)).join(',\n\t\t\t')}
 		}
 	}
 }
 
 `);
+			outputRecords.push(`domain.registerRecord(adapter, Matrix${typeHandle}, {
+	defaultLocale: locale,
+	propertyMap: {
+		${type.fields.map(f => `'${f.handle}': '${f.column}'`).join(",\n\t\t")}
+	},
+	selectQuery: ({ where, order, limit, offset }, query, options, configs) => {
+		return \`SELECT ${type.fields.filter(f => fieldToType(f).relation === null).map(f => `${f.column} AS "${f.handle}"`).join(", ")} \` +
+		\`FROM craft_matrixblocks AS b \` +
+		\`LEFT JOIN craft_matrixcontent_${field.handle.toLowerCase()} AS c ON c.elementId = b.id AND c.locale = "\${locale}" \` +
+		\`WHERE b.fieldId = ${field.id} AND b.typeId = ${type.id} \${where ? \`AND (\${where}) \` : \`\`}\` +
+		\`GROUP BY b.id \` +
+		(order ? \`ORDER BY \${order} \` : \`\`) +
+		(limit ? \`LIMIT \${limit} \` : \`\`) +
+		(offset ? \`OFFSET \${offset} \` : \`\`);
+	},
+	deleteQuery: ({ where, limit, offset }, query, options, configs) => {
+		return \`DELETE b \` +
+		\`FROM craft_matrixblocks AS b \` +
+		(where ? \`WHERE \${where}\` : \`\`) +
+		(limit ? \`LIMIT \${limit} \` : \`\`) +
+		(offset ? \`OFFSET \${offset} \` : \`\`);
+	},
+	${type.fields.filter(f => fieldToType(f).relation !== null).length > 0 ? `onRows: (rows, query, options, configs) => {
+		if (rows.length === 0) return Promise.resolve(rows);
+		return new Promise((resolve, reject) => {
+			const driver = adapter.getDriver();
+			const rowIds = rows.map(row => row.id);
+			driver.query(\`
+(${type.fields.filter(f => fieldToType(f).relation !== null).map(f => fieldToRelation(f)).join(")\nUNION\n(")})
+\`, (err, relations) => {
+				if (err) return reject(err);
+
+				rows.forEach(row => {
+					${type.fields.filter(f => fieldToType(f).relation !== null).map(field => relationToProperty(field)).join("\n\t\t\t\t\t")}
+				});
+
+				return resolve(rows);
+			});
+		});
+	}` : ``}
+})`);
 		});
 
 		if (typeHandles.length > 1) {
-			process.stdout.write(`class Matrix${matrixHandle} extends UnionModel {
+			models.push(`Matrix${matrixHandle}`);
+			outputModels.push(`class Matrix${matrixHandle} extends UnionModel {
 	static get models () {
 		return [${typeHandles.join(', ')}];
 	}
 }
 
 `);
+			outputRecords.push(`domain.registerRecord(adapter, Matrix${matrixHandle}, {})`);
 		}
 	});
 
 	fields.filter(f => f.type == 'SuperTable').forEach(field => {
 
 		let tableFields = [
-			{handle: 'id', type: 'ID', name: 'ID'},
-			{handle: 'dateCreated', type: 'Date', name: 'Created date'},
-			{handle: 'dateUpdated', type: 'Date', name: 'Updated date'}
+			{handle: 'id', column: 'b.id', type: 'ID', name: 'ID'},
+			{handle: 'dateCreated', column: 'b.dateCreated', type: 'Date', name: 'Created date'},
+			{handle: 'dateUpdated', column: 'b.dateUpdated', type: 'Date', name: 'Updated date'}
 		];
 
 		let layoutId = superTables.filter(st => st.fieldId == field.id)[0].fieldLayoutId;
 		tableFields.push.apply(tableFields, layoutFields.filter(lf => lf.layoutId == layoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]));
 
 		const tableHandle = field.handle[0].toUpperCase() + field.handle.substr(1);
-
-		process.stdout.write(`class SuperTable${tableHandle} extends Model {
+		models.push(`SuperTable${tableHandle}`);
+		outputModels.push(`class SuperTable${tableHandle} extends Model {
 	static get schema () {
 		return {
-			${tableFields.map(field => outputField(field)).join(',\n\t\t\t')}
+			${tableFields.map(field => fieldToDefinition(field)).join(',\n\t\t\t')}
 		}
 	}
 }
 
 `);
+		outputRecords.push(`domain.registerRecord(adapter, SuperTable${tableHandle}, {
+	defaultLocale: locale,
+	propertyMap: {
+		${tableFields.map(f => `'${f.handle}': '${f.column}'`).join(",\n\t\t")}
+	},
+	selectQuery: ({ where, order, limit, offset }, query, options, configs) => {
+		return \`SELECT ${tableFields.filter(f => fieldToType(f).relation === null).map(f => `${f.column} AS "${f.handle}"`).join(", ")} \` +
+		\`FROM craft_supertableblocks AS b \` +
+		\`LEFT JOIN craft_supertablecontent_${field.handle.toLowerCase()} AS c ON c.elementId = b.id AND c.locale = "\${locale}" \` +
+		\`WHERE b.fieldId = ${field.id} \${where ? \`AND (\${where}) \` : \`\`}\` +
+		\`GROUP BY b.id \` +
+		(order ? \`ORDER BY \${order} \` : \`\`) +
+		(limit ? \`LIMIT \${limit} \` : \`\`) +
+		(offset ? \`OFFSET \${offset} \` : \`\`);
+	},
+	deleteQuery: ({ where, limit, offset }, query, options, configs) => {
+		return \`DELETE b \` +
+		\`FROM craft_matrixblocks AS b \` +
+		(where ? \`WHERE \${where}\` : \`\`) +
+		(limit ? \`LIMIT \${limit} \` : \`\`) +
+		(offset ? \`OFFSET \${offset} \` : \`\`);
+	},
+	${tableFields.filter(f => fieldToType(f).relation !== null).length > 0 ? `onRows: (rows, query, options, configs) => {
+		if (rows.length === 0) return Promise.resolve(rows);
+		return new Promise((resolve, reject) => {
+			const driver = adapter.getDriver();
+			const rowIds = rows.map(row => row.id);
+			driver.query(\`
+(${tableFields.filter(f => fieldToType(f).relation !== null).map(f => fieldToRelation(f)).join(")\nUNION\n(")})
+\`, (err, relations) => {
+				if (err) return reject(err);
+
+				rows.forEach(row => {
+					${tableFields.filter(f => fieldToType(f).relation !== null).map(field => relationToProperty(field)).join("\n\t\t\t\t\t")}
+				});
+
+				return resolve(rows);
+			});
+		});
+	}` : ``}
+})`);
 	});
+
+	process.stdout.write(outputModels.join(''));
+
+	process.stdout.write(`function createRecords (domain, adapter, locale) {
+	return Promise.all([
+		${outputRecords.join(",\n")}
+	]).then(records => {
+		return {
+			${models.map((model, i) => `${model}: records[${i}]`).join(",\n\t\t\t")}
+		};
+	});
+}
+
+`);
+
+	process.stdout.write(`module.exports = {
+	models: { ${models.join(', ')} },
+	createRecords: createRecords
+}`);
 
 })
 .catch(err => {
