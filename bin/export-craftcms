@@ -378,20 +378,28 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 	propertyMap: {
 		${groupFields.map(f => `'${f.handle}': '${f.column}'`).join(",\n\t\t")}
 	},
-	selectQuery: ({ where, order, limit, offset }, query, options, configs) => {
-		return \`SELECT ${groupFields.map(f => `${f.column} AS "${f.handle}"`).join(", ")} \` +
-		\`FROM craft_usergroups AS g \` +
-		(where ? \` WHERE \${where} \` : \`\`) +
-		(order ? \` ORDER BY \${order} \` : \`\`) +
-		(limit ? \`LIMIT \${limit} \` : \`\`) +
-		(offset ? \`OFFSET \${offset} \` : \`\`);
+	onSelect: (db, where, order, { limit, skip, locale }, configs) => {
+		return new Promise((resolve, reject) => {
+			db.query(\`
+				SELECT ${groupFields.map(f => `${f.column} AS "${f.handle}"`).join(", ")}
+				FROM craft_usergroups AS g
+				\${(where ? \`WHERE \${where}\` : \`\`)}
+				\${(order ? \`ORDER BY \${order}\` : \`\`)}
+				\${(limit ? \`LIMIT \${limit}\` : \`\`)}
+				\${(skip ? \`OFFSET \${skip}\` : \`\`)}
+			\`, (err, rows) => {
+				if (err) return reject(err);
+				return resolve(rows);
+			});
+		});
 	},
-	deleteQuery: ({ where, limit, offset }, query, options, configs) => {
-		return \`DELETE g \` +
-		\`FROM craft_usergroups AS g \` +
-		(where ? \`WHERE \${where}\` : \`\`) +
-		(limit ? \`LIMIT \${limit} \` : \`\`) +
-		(offset ? \`OFFSET \${offset} \` : \`\`);
+	onDelete: (db, ids, options, configs) => {
+		return new Promise((resolve, reject) => {
+			db.query(\`DELETE g FROM craft_usergroups AS g WHERE g.id IN (\${ids.join(', ')})\`, (err) => {
+				if (err) return reject(err);
+				return resolve(ids);
+			})
+		});
 	}
 })`);
 
@@ -424,42 +432,52 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 	propertyMap: {
 		${userFields.map(f => `'${f.handle}': '${f.column}'`).join(",\n\t\t")}
 	},
-	selectQuery: ({ where, order, limit, offset }, query, options, configs) => {
-		return \`SELECT ${userFields.filter(f => fieldToType(f).relation === null).map(f => `${f.column} AS "${f.handle}"`).join(", ")} \` +
-		\`FROM craft_users AS u \` +
-		\`LEFT JOIN craft_usergroups_users AS g ON g.userId = u.id \` +
-		\`LEFT JOIN craft_content AS c ON c.elementId = u.id AND c.locale = "\${locale}" \` +
-		(where ? \`WHERE \${where} \` : \`\`) +
-		\`GROUP BY u.id \` +
-		(order ? \`ORDER BY \${order} \` : \`\`) +
-		(limit ? \`LIMIT \${limit} \` : \`\`) +
-		(offset ? \`OFFSET \${offset} \` : \`\`);
-	},
-	deleteQuery: ({ where, limit, offset }, query, options, configs) => {
-		return \`DELETE u \` +
-		\`FROM craft_users AS u \` +
-		(where ? \`WHERE \${where}\` : \`\`) +
-		(limit ? \`LIMIT \${limit} \` : \`\`) +
-		(offset ? \`OFFSET \${offset} \` : \`\`);
-	},
-	${userFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'groups').length > 0 ? `onRows: (rows, query, options, configs) => {
-		if (rows.length === 0) return Promise.resolve(rows);
+	onSelect: (db, where, order, { limit, skip, locale }, configs) => {
 		return new Promise((resolve, reject) => {
-			const driver = adapter.getDriver();
-			const rowIds = rows.map(row => row.id);
-			driver.query(\`
-(${userFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'groups').map(f => fieldToRelation(f)).concat([`SELECT userId AS "id", "groups" AS "key", groupId AS "value" FROM craft_usergroups_users WHERE userId IN (\${rowIds.join(', ')})`]).join(")\nUNION\n(")})
-\`, (err, relations) => {
+			db.query(\`
+				SELECT ${userFields.filter(f => fieldToType(f).relation === null).map(f => `${f.column} AS "${f.handle}"`).join(", ")}
+				FROM craft_users AS u
+				LEFT JOIN craft_usergroups_users AS g ON g.userId = u.id
+				LEFT JOIN craft_content AS c ON c.elementId = u.id AND c.locale = "\${locale}"
+				\${(where ? \`WHERE \${where}\` : \`\`)}
+				GROUP BY u.id
+				\${(order ? \`ORDER BY \${order}\` : \`\`)}
+				\${(limit ? \`LIMIT \${limit}\` : \`\`)}
+				\${(skip ? \`OFFSET \${skip}\` : \`\`)}
+			\`, (err, rows) => {
 				if (err) return reject(err);
+				${userFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'groups').length > 0 ? `if (rows.length > 0) {
+					const rowIds = rows.map(row => row.id);
+					db.query(\`
+						(${userFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'groups').map(f => fieldToRelation(f)).concat([`SELECT userId AS "id", "groups" AS "key", groupId AS "value" FROM craft_usergroups_users WHERE userId IN (\${rowIds.join(', ')})`]).join(")\n\t\t\t\t\t\tUNION\n\t\t\t\t\t\t(")})
+					\`, (err, relations) => {
+						if (err) return reject(err);
 
-				rows.forEach(row => {
-					${userFields.filter(f => fieldToType(f).relation !== null).map(field => relationToProperty(field)).join("\n\t\t\t\t\t")}
-				});
+						rows.forEach(row => {
+							${userFields.filter(f => fieldToType(f).relation !== null).map(field => relationToProperty(field)).join("\n\t\t\t\t\t\t\t")}
+						});
 
-				return resolve(rows);
+						return resolve(rows);
+					});
+				} else { return resolve(rows); }` : `return resolve(rows);`}
 			});
 		});
-	}` : ``}
+	},
+	onDelete: (db, ids, options, configs) => {
+		return new Promise((resolve, reject) => {
+			db.query(\`DELETE el FFROM craft_elements AS el WHERE el.id IN (\${ids.join(', ')})\`, (err) => {
+				if (err) return reject(err);
+				return resolve(ids);
+			})
+		});
+	},
+	onUpdate: (data, options, configs) => {
+		// const locale = options.locale = configs.defaultLocale;
+		// return [{
+		// 	query: \`UPDATE craft_users AS u LEFT JOIN craft_content AS c ON c.elementId = u.id AND c.locale = "\${locale}" SET ${userFields.filter(f => fieldToType(f).relation === null && f.handle !== 'id').map(f => `${f.column} = ?`).join(", ")} WHERE u.id = \${data.id}\`,
+		// 	values: [${userFields.filter(f => fieldToType(f).relation === null && f.handle !== 'id').map(f => `data.get('${f.handle}')`).join(', ')}]
+		// }];
+	}
 })`);
 
 	// globals.forEach(global => {
@@ -510,43 +528,46 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 	propertyMap: {
 		${type.fields.map(f => `'${f.handle}': '${f.column}'`).join(",\n\t\t")}
 	},
-	selectQuery: ({ where, order, limit, offset }, query, options, configs) => {
-		return \`SELECT ${type.fields.filter(f => fieldToType(f).relation === null).map(f => `${f.column} AS "${f.handle}"`).join(", ")} \` +
-		\`FROM craft_elements AS el \` +
-		\`LEFT JOIN craft_entries AS e ON e.id = el.id \` + 
-		\`LEFT JOIN craft_elements_i18n AS eli ON eli.elementId = e.id AND eli.locale = "\${locale}" \` +
-		\`LEFT JOIN craft_content AS c ON c.elementId = el.id AND c.locale = "\${locale}" \` +
-		\`WHERE e.sectionId = ${section.id} AND e.typeId = ${type.id} \${where ? \`AND (\${where}) \` : \`\`}\` +
-		\`GROUP BY el.id \` +
-		(order ? \`ORDER BY \${order} \` : \`\`) +
-		(limit ? \`LIMIT \${limit} \` : \`\`) +
-		(offset ? \`OFFSET \${offset} \` : \`\`);
-	},
-	deleteQuery: ({ where, limit, offset }, query, options, configs) => {
-		return \`DELETE el \` +
-		\`FROM craft_elements AS el \` +
-		(where ? \`WHERE \${where}\` : \`\`) +
-		(limit ? \`LIMIT \${limit} \` : \`\`) +
-		(offset ? \`OFFSET \${offset} \` : \`\`);
-	},
-	${type.fields.filter(f => fieldToType(f).relation !== null && f.handle !== 'author').length > 0 ? `onRows: (rows, query, options, configs) => {
-		if (rows.length === 0) return Promise.resolve(rows);
+	onSelect: (db, where, order, { limit, skip, locale }, configs) => {
 		return new Promise((resolve, reject) => {
-			const driver = adapter.getDriver();
-			const rowIds = rows.map(row => row.id);
-			driver.query(\`
-(${type.fields.filter(f => fieldToType(f).relation !== null && f.handle !== 'author').map(f => fieldToRelation(f)).join(")\nUNION\n(")})
-\`, (err, relations) => {
+			db.query(\`
+				SELECT ${type.fields.filter(f => fieldToType(f).relation === null).map(f => `${f.column} AS "${f.handle}"`).join(", ")}
+				FROM craft_elements AS el
+				LEFT JOIN craft_entries AS e ON e.id = el.id
+				LEFT JOIN craft_elements_i18n AS eli ON eli.elementId = e.id AND eli.locale = "\${locale}"
+				LEFT JOIN craft_content AS c ON c.elementId = el.id AND c.locale = "\${locale}"
+				WHERE e.sectionId = ${section.id} AND e.typeId = ${type.id} \${where ? \`AND (\${where}) \` : \`\`}
+				GROUP BY el.id
+				\${(order ? \`ORDER BY \${order} \` : \`\`)}
+				\${(limit ? \`LIMIT \${limit} \` : \`\`)}
+				\${(skip ? \`OFFSET \${skip} \` : \`\`)}
+			\`, (err, rows) => {
 				if (err) return reject(err);
+				${type.fields.filter(f => fieldToType(f).relation !== null && f.handle !== 'author').length > 0 ? `if (rows.length > 0) {
+					const rowIds = rows.map(row => row.id);
+					db.query(\`
+						(${type.fields.filter(f => fieldToType(f).relation !== null && f.handle !== 'author').map(f => fieldToRelation(f)).join(")\n\t\t\t\t\t\tUNION\n\t\t\t\t\t\t(")})
+					\`, (err, relations) => {
+						if (err) return reject(err);
 
-				rows.forEach(row => {
-					${type.fields.filter(f => fieldToType(f).relation !== null && f.handle !== 'author').map(field => relationToProperty(field)).join("\n\t\t\t\t\t")}
-				});
+						rows.forEach(row => {
+							${type.fields.filter(f => fieldToType(f).relation !== null && f.handle !== 'author').map(field => relationToProperty(field)).join("\n\t\t\t\t\t\t\t")}
+						});
 
-				return resolve(rows);
+						return resolve(rows);
+					});
+				} else { return resolve(rows); }` : `return resolve(rows);`}
 			});
 		});
-	}` : ``}
+	},
+	onDelete: (db, ids, options, configs) => {
+		return new Promise((resolve, reject) => {
+			db.query(\`DELETE el FFROM craft_elements AS el WHERE el.id IN (\${ids.join(', ')})\`, (err) => {
+				if (err) return reject(err);
+				return resolve(ids);
+			})
+		});
+	}
 })`);
 		});
 
@@ -601,43 +622,46 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 	propertyMap: {
 		${categoryFields.map(f => `'${f.handle}': '${f.column}'`).join(",\n\t\t")}
 	},
-	selectQuery: ({ where, order, limit, offset }, query, options, configs) => {
-		return \`SELECT ${categoryFields.filter(f => fieldToType(f).relation === null).map(f => `${f.column} AS "${f.handle}"`).join(", ")} \` +
-		\`FROM craft_elements AS el \` +
-		\`LEFT JOIN craft_categories AS ca ON ca.id = el.id \` + 
-		\`LEFT JOIN craft_elements_i18n AS eli ON eli.elementId = e.id AND eli.locale = "\${locale}" \` +
-		\`LEFT JOIN craft_content AS c ON c.elementId = el.id AND c.locale = "\${locale}" \` +
-		\`WHERE c.groupId = ${category.id} \${where ? \`AND (\${where}) \` : \`\`}\` +
-		\`GROUP BY el.id \` +
-		(order ? \`ORDER BY \${order} \` : \`\`) +
-		(limit ? \`LIMIT \${limit} \` : \`\`) +
-		(offset ? \`OFFSET \${offset} \` : \`\`);
-	},
-	deleteQuery: ({ where, limit, offset }, query, options, configs) => {
-		return \`DELETE el \` +
-		\`FROM craft_elements AS el \` +
-		(where ? \`WHERE \${where}\` : \`\`) +
-		(limit ? \`LIMIT \${limit} \` : \`\`) +
-		(offset ? \`OFFSET \${offset} \` : \`\`);
-	},
-	${categoryFields.filter(f => fieldToType(f).relation !== null).length > 0 ? `onRows: (rows, query, options, configs) => {
-		if (rows.length === 0) return Promise.resolve(rows);
+	onSelect: (db, where, order, { limit, skip, locale }, configs) => {
 		return new Promise((resolve, reject) => {
-			const driver = adapter.getDriver();
-			const rowIds = rows.map(row => row.id);
-			driver.query(\`
-(${categoryFields.filter(f => fieldToType(f).relation !== null).map(f => fieldToRelation(f)).join(")\nUNION\n(")})
-\`, (err, relations) => {
+			db.query(\`
+				SELECT ${categoryFields.filter(f => fieldToType(f).relation === null).map(f => `${f.column} AS "${f.handle}"`).join(", ")}
+				FROM craft_elements AS el
+				LEFT JOIN craft_categories AS ca ON ca.id = el.id
+				LEFT JOIN craft_elements_i18n AS eli ON eli.elementId = el.id AND eli.locale = "\${locale}"
+				LEFT JOIN craft_content AS c ON c.elementId = el.id AND c.locale = "\${locale}"
+				WHERE ca.groupId = ${category.id} \${where ? \`AND (\${where}) \` : \`\`}
+				GROUP BY el.id
+				\${(order ? \`ORDER BY \${order} \` : \`\`)}
+				\${(limit ? \`LIMIT \${limit} \` : \`\`)}
+				\${(skip ? \`OFFSET \${skip} \` : \`\`)}
+			\`, (err, rows) => {
 				if (err) return reject(err);
+				${categoryFields.filter(f => fieldToType(f).relation !== null).length > 0 ? `if (rows.length > 0) {
+					const rowIds = rows.map(row => row.id);
+					db.query(\`
+						(${categoryFields.filter(f => fieldToType(f).relation !== null).map(f => fieldToRelation(f)).join(")\n\t\t\t\t\t\tUNION\n\t\t\t\t\t\t(")})
+					\`, (err, relations) => {
+						if (err) return reject(err);
 
-				rows.forEach(row => {
-					${categoryFields.filter(f => fieldToType(f).relation !== null).map(field => relationToProperty(field)).join("\n\t\t\t\t\t")}
-				});
+						rows.forEach(row => {
+							${categoryFields.filter(f => fieldToType(f).relation !== null).map(field => relationToProperty(field)).join("\n\t\t\t\t\t\t\t")}
+						});
 
-				return resolve(rows);
+						return resolve(rows);
+					});
+				} else { return resolve(rows); }` : `return resolve(rows);`}
 			});
 		});
-	}` : ``}
+	},
+	onDelete: (db, ids, options, configs) => {
+		return new Promise((resolve, reject) => {
+			db.query(\`DELETE el FFROM craft_elements AS el WHERE el.id IN (\${ids.join(', ')})\`, (err) => {
+				if (err) return reject(err);
+				return resolve(ids);
+			})
+		});
+	}
 })`);
 	});
 
@@ -673,20 +697,28 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 	propertyMap: {
 		${folderFields.map(f => `'${f.handle}': '${f.column}'`).join(",\n\t\t")}
 	},
-	selectQuery: ({ where, order, limit, offset }, query, options, configs) => {
-		return \`SELECT ${folderFields.map(f => `${f.column} AS "${f.handle}"`).join(", ")} \` +
-		\`FROM craft_assetfolders AS f \` +
-		(where ? \`WHERE \${where}\` : \`\`) +
-		(order ? \`ORDER BY \${order} \` : \`\`) +
-		(limit ? \`LIMIT \${limit} \` : \`\`) +
-		(offset ? \`OFFSET \${offset} \` : \`\`);
+	onSelect: (db, where, order, { limit, skip, locale }, configs) => {
+		return new Promise((resolve, reject) => {
+			db.query(\`
+				SELECT ${folderFields.map(f => `${f.column} AS "${f.handle}"`).join(", ")}
+				FROM craft_assetfolders AS f
+				\${(where ? \`WHERE \${where}\` : \`\`)}
+				\${(order ? \`ORDER BY \${order} \` : \`\`)}
+				\${(limit ? \`LIMIT \${limit} \` : \`\`)}
+				\${(skip ? \`OFFSET \${skip} \` : \`\`)}
+			\`, (err, rows) => {
+				if (err) return reject(err);
+				return resolve(rows);
+			});
+		});
 	},
-	deleteQuery: ({ where, limit, offset }, query, options, configs) => {
-		return \`DELETE f \` +
-		\`FROM craft_assetfolders AS f \` +
-		(where ? \`WHERE \${where}\` : \`\`) +
-		(limit ? \`LIMIT \${limit} \` : \`\`) +
-		(offset ? \`OFFSET \${offset} \` : \`\`);
+	onDelete: (db, ids, options, configs) => {
+		return new Promise((resolve, reject) => {
+			db.query(\`DELETE f FFROM craft_assetfolders AS f WHERE f.id IN (\${ids.join(', ')})\`, (err) => {
+				if (err) return reject(err);
+				return resolve(ids);
+			})
+		});
 	}
 })`);
 
@@ -721,41 +753,44 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 	propertyMap: {
 		${assetFields.map(f => `'${f.handle}': '${f.column}'`).join(",\n\t\t")}
 	},
-	selectQuery: ({ where, order, limit, offset }, query, options, configs) => {
-		return \`SELECT ${assetFields.filter(f => fieldToType(f).relation === null || f.handle === 'folder').map(f => `${f.column} AS "${f.handle}"`).join(", ")} \` +
-		\`FROM craft_assetfiles AS a \` +
-		\`LEFT JOIN craft_content AS c ON c.elementId = a.id AND c.locale = "\${locale}" \` +
-		\`WHERE a.sourceId = ${asset.id} \${where ? \`AND (\${where}) \` : \`\`}\` +
-		\`GROUP BY a.id \` +
-		(order ? \`ORDER BY \${order} \` : \`\`) +
-		(limit ? \`LIMIT \${limit} \` : \`\`) +
-		(offset ? \`OFFSET \${offset} \` : \`\`);
-	},
-	deleteQuery: ({ where, limit, offset }, query, options, configs) => {
-		return \`DELETE a \` +
-		\`FROM craft_assetfiles AS a \` +
-		(where ? \`WHERE \${where}\` : \`\`) +
-		(limit ? \`LIMIT \${limit} \` : \`\`) +
-		(offset ? \`OFFSET \${offset} \` : \`\`);
-	},
-	${assetFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'folder').length > 0 ? `onRows: (rows, query, options, configs) => {
-		if (rows.length === 0) return Promise.resolve(rows);
+	onSelect: (db, where, order, { limit, skip, locale }, configs) => {
 		return new Promise((resolve, reject) => {
-			const driver = adapter.getDriver();
-			const rowIds = rows.map(row => row.id);
-			driver.query(\`
-(${assetFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'folder').map(f => fieldToRelation(f)).join(")\nUNION\n(")})
-\`, (err, relations) => {
+			db.query(\`
+				SELECT ${assetFields.filter(f => fieldToType(f).relation === null || f.handle === 'folder').map(f => `${f.column} AS "${f.handle}"`).join(", ")}
+				FROM craft_assetfiles AS a
+				LEFT JOIN craft_content AS c ON c.elementId = a.id AND c.locale = "\${locale}"
+				WHERE a.sourceId = ${asset.id} \${where ? \`AND (\${where}) \` : \`\`}
+				GROUP BY a.id
+				\${(order ? \`ORDER BY \${order} \` : \`\`)}
+				\${(limit ? \`LIMIT \${limit} \` : \`\`)}
+				\${(skip ? \`OFFSET \${skip} \` : \`\`)}
+			\`, (err, rows) => {
 				if (err) return reject(err);
+				${assetFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'folder').length > 0 ? `if (rows.length > 0) {
+					const rowIds = rows.map(row => row.id);
+					db.query(\`
+						(${assetFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'folder').map(f => fieldToRelation(f)).join(")\n\t\t\t\t\t\tUNION\n\t\t\t\t\t\t(")})
+					\`, (err, relations) => {
+						if (err) return reject(err);
 
-				rows.forEach(row => {
-					${assetFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'folder').map(field => relationToProperty(field)).join("\n\t\t\t\t\t")}
-				});
+						rows.forEach(row => {
+							${assetFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'folder').map(field => relationToProperty(field)).join("\n\t\t\t\t\t\t\t")}
+						});
 
-				return resolve(rows);
+						return resolve(rows);
+					});
+				} else { return resolve(rows); }` : `return resolve(rows);`}
 			});
 		});
-	}` : ``}
+	},
+	onDelete: (db, ids, options, configs) => {
+		return new Promise((resolve, reject) => {
+			db.query(\`DELETE el FFROM craft_elements AS el WHERE el.id IN (\${ids.join(', ')})\`, (err) => {
+				if (err) return reject(err);
+				return resolve(ids);
+			})
+		});
+	},
 })`);
 	});
 
@@ -811,41 +846,44 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 	propertyMap: {
 		${type.fields.map(f => `'${f.handle}': '${f.column}'`).join(",\n\t\t")}
 	},
-	selectQuery: ({ where, order, limit, offset }, query, options, configs) => {
-		return \`SELECT ${type.fields.filter(f => fieldToType(f).relation === null).map(f => `${f.column} AS "${f.handle}"`).join(", ")} \` +
-		\`FROM craft_matrixblocks AS b \` +
-		\`LEFT JOIN craft_matrixcontent_${field.handle.toLowerCase()} AS c ON c.elementId = b.id AND c.locale = "\${locale}" \` +
-		\`WHERE b.fieldId = ${field.id} AND b.typeId = ${type.id} \${where ? \`AND (\${where}) \` : \`\`}\` +
-		\`GROUP BY b.id \` +
-		(order ? \`ORDER BY \${order} \` : \`\`) +
-		(limit ? \`LIMIT \${limit} \` : \`\`) +
-		(offset ? \`OFFSET \${offset} \` : \`\`);
-	},
-	deleteQuery: ({ where, limit, offset }, query, options, configs) => {
-		return \`DELETE b \` +
-		\`FROM craft_matrixblocks AS b \` +
-		(where ? \`WHERE \${where}\` : \`\`) +
-		(limit ? \`LIMIT \${limit} \` : \`\`) +
-		(offset ? \`OFFSET \${offset} \` : \`\`);
-	},
-	${type.fields.filter(f => fieldToType(f).relation !== null).length > 0 ? `onRows: (rows, query, options, configs) => {
-		if (rows.length === 0) return Promise.resolve(rows);
+	onSelect: (db, where, order, { limit, skip, locale }, configs) => {
 		return new Promise((resolve, reject) => {
-			const driver = adapter.getDriver();
-			const rowIds = rows.map(row => row.id);
-			driver.query(\`
-(${type.fields.filter(f => fieldToType(f).relation !== null).map(f => fieldToRelation(f)).join(")\nUNION\n(")})
-\`, (err, relations) => {
+			db.query(\`
+				SELECT ${type.fields.filter(f => fieldToType(f).relation === null).map(f => `${f.column} AS "${f.handle}"`).join(", ")}
+				FROM craft_matrixblocks AS b
+				LEFT JOIN craft_matrixcontent_${field.handle.toLowerCase()} AS c ON c.elementId = b.id AND c.locale = "\${locale}"
+				WHERE b.fieldId = ${field.id} AND b.typeId = ${type.id} \${where ? \`AND (\${where}) \` : \`\`}
+				GROUP BY b.id
+				\${(order ? \`ORDER BY \${order} \` : \`\`)}
+				\${(limit ? \`LIMIT \${limit} \` : \`\`)}
+				\${(skip ? \`OFFSET \${skip} \` : \`\`)}
+			\`, (err, rows) => {
 				if (err) return reject(err);
+				${type.fields.filter(f => fieldToType(f).relation !== null).length > 0 ? `if (rows.length > 0) {
+					const rowIds = rows.map(row => row.id);
+					db.query(\`
+						(${type.fields.filter(f => fieldToType(f).relation !== null).map(f => fieldToRelation(f)).join(")\n\t\t\t\t\t\tUNION\n\t\t\t\t\t\t(")})
+					\`, (err, relations) => {
+						if (err) return reject(err);
 
-				rows.forEach(row => {
-					${type.fields.filter(f => fieldToType(f).relation !== null).map(field => relationToProperty(field)).join("\n\t\t\t\t\t")}
-				});
+						rows.forEach(row => {
+							${type.fields.filter(f => fieldToType(f).relation !== null).map(field => relationToProperty(field)).join("\n\t\t\t\t\t\t\t")}
+						});
 
-				return resolve(rows);
+						return resolve(rows);
+					});
+				} else { return resolve(rows); }` : `return resolve(rows);`}
 			});
 		});
-	}` : ``}
+	},
+	onDelete: (db, ids, options, configs) => {
+		return new Promise((resolve, reject) => {
+			db.query(\`DELETE el FFROM craft_elements AS el WHERE el.id IN (\${ids.join(', ')})\`, (err) => {
+				if (err) return reject(err);
+				return resolve(ids);
+			})
+		});
+	}
 })`);
 		});
 
@@ -889,41 +927,44 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 	propertyMap: {
 		${tableFields.map(f => `'${f.handle}': '${f.column}'`).join(",\n\t\t")}
 	},
-	selectQuery: ({ where, order, limit, offset }, query, options, configs) => {
-		return \`SELECT ${tableFields.filter(f => fieldToType(f).relation === null).map(f => `${f.column} AS "${f.handle}"`).join(", ")} \` +
-		\`FROM craft_supertableblocks AS b \` +
-		\`LEFT JOIN craft_supertablecontent_${field.handle.toLowerCase()} AS c ON c.elementId = b.id AND c.locale = "\${locale}" \` +
-		\`WHERE b.fieldId = ${field.id} \${where ? \`AND (\${where}) \` : \`\`}\` +
-		\`GROUP BY b.id \` +
-		(order ? \`ORDER BY \${order} \` : \`\`) +
-		(limit ? \`LIMIT \${limit} \` : \`\`) +
-		(offset ? \`OFFSET \${offset} \` : \`\`);
-	},
-	deleteQuery: ({ where, limit, offset }, query, options, configs) => {
-		return \`DELETE b \` +
-		\`FROM craft_matrixblocks AS b \` +
-		(where ? \`WHERE \${where}\` : \`\`) +
-		(limit ? \`LIMIT \${limit} \` : \`\`) +
-		(offset ? \`OFFSET \${offset} \` : \`\`);
-	},
-	${tableFields.filter(f => fieldToType(f).relation !== null).length > 0 ? `onRows: (rows, query, options, configs) => {
-		if (rows.length === 0) return Promise.resolve(rows);
+	onSelect: (db, where, order, { limit, skip, locale }, configs) => {
 		return new Promise((resolve, reject) => {
-			const driver = adapter.getDriver();
-			const rowIds = rows.map(row => row.id);
-			driver.query(\`
-(${tableFields.filter(f => fieldToType(f).relation !== null).map(f => fieldToRelation(f)).join(")\nUNION\n(")})
-\`, (err, relations) => {
+			db.query(\`
+				SELECT ${tableFields.filter(f => fieldToType(f).relation === null).map(f => `${f.column} AS "${f.handle}"`).join(", ")}
+				FROM craft_supertableblocks AS b
+				LEFT JOIN craft_supertablecontent_${field.handle.toLowerCase()} AS c ON c.elementId = b.id AND c.locale = "\${locale}"
+				WHERE b.fieldId = ${field.id} \${where ? \`AND (\${where}) \` : \`\`}
+				GROUP BY b.id
+				\${(order ? \`ORDER BY \${order} \` : \`\`)}
+				\${(limit ? \`LIMIT \${limit} \` : \`\`)}
+				\${(skip ? \`OFFSET \${skip} \` : \`\`)}
+			\`, (err, rows) => {
 				if (err) return reject(err);
+				${tableFields.filter(f => fieldToType(f).relation !== null).length > 0 ? `if (rows.length > 0) {
+					const rowIds = rows.map(row => row.id);
+					db.query(\`
+						(${tableFields.filter(f => fieldToType(f).relation !== null).map(f => fieldToRelation(f)).join(")\n\t\t\t\t\t\tUNION\n\t\t\t\t\t\t(")})
+					\`, (err, relations) => {
+						if (err) return reject(err);
 
-				rows.forEach(row => {
-					${tableFields.filter(f => fieldToType(f).relation !== null).map(field => relationToProperty(field)).join("\n\t\t\t\t\t")}
-				});
+						rows.forEach(row => {
+							${tableFields.filter(f => fieldToType(f).relation !== null).map(field => relationToProperty(field)).join("\n\t\t\t\t\t\t\t")}
+						});
 
-				return resolve(rows);
+						return resolve(rows);
+					});
+				} else { return resolve(rows); }` : `return resolve(rows);`}
 			});
 		});
-	}` : ``}
+	},
+	onDelete: (db, ids, options, configs) => {
+		return new Promise((resolve, reject) => {
+			db.query(\`DELETE el FFROM craft_elements AS el WHERE el.id IN (\${ids.join(', ')})\`, (err) => {
+				if (err) return reject(err);
+				return resolve(ids);
+			})
+		});
+	},
 })`);
 	});
 
