@@ -291,7 +291,7 @@ Promise.all([
 		return `${out} }`;
 	};
 
-	const fieldToRelation = (field) => {
+	const fieldToRelationSelect = (field) => {
 		switch (field.type) {
 			case 'Assets':
 			case 'Entries':
@@ -313,7 +313,47 @@ Promise.all([
 			default:
 				throw new Error(`Type ${field.type} is not a relation.`);
 		}
-	}
+	};
+
+	const fieldToRelationInsert = (field) => {
+		switch (field.type) {
+			case 'Assets':
+			case 'Entries':
+			case 'Categories':
+				return `
+					DELETE r FROM craft_relations AS r WHERE fieldId = ${field.id} AND sourceId = \${data.id};
+					\${data.${field.handle} && isArray(data.${field.handle}) && data.${field.handle}.length > 0 ? \`
+						INSERT INTO craft_relations (fieldId, sourceId, sourceLocale, targetId, sortOrder, dateCreated, dateUpdated, uid)
+						VALUES (\${data.${field.handle}.map((v, i) => [${field.id}, data.id, 'NULL', v, i, 'NOW()', 'NOW()', \`"\${uuid4()}"\`].join(', ')).join('), (')});
+					\` : \`\`}
+				`;
+
+			case 'Matrix':
+				return `
+					\${data.${field.handle} && isArray(data.${field.handle}) && data.${field.handle}.length > 0 ? \`
+						DELETE r FROM craft_matrixblocks AS r WHERE fieldId = ${field.id} AND ownerId = \${data.id} AND id NOT IN (\${data.${field.handle}.join(', ')});
+						\${data.${field.handle}.map(v => \`UPDATE craft_matrixblocks SET fieldId = ${field.id}, ownerId = \${data.id} WHERE id = \${v} LIMIT 1\`).join(";\\n")}
+					\` : \`DELETE r FROM craft_matrixblocks AS r WHERE fieldId = ${field.id} AND ownerId = \${data.id};\`}
+				`;
+
+			case 'SuperTable':
+				return `
+					\${data.${field.handle} && isArray(data.${field.handle}) && data.${field.handle}.length > 0 ? \`
+						DELETE r FROM craft_supertableblocks AS r WHERE fieldId = ${field.id} AND ownerId = \${data.id} AND id NOT IN (\${data.${field.handle}.join(', ')});
+						\${data.${field.handle}.map(v => \`UPDATE craft_supertableblocks SET fieldId = ${field.id}, ownerId = \${data.id} WHERE id = \${v} LIMIT 1\`).join(";\\n")}
+					\` : \`DELETE r FROM craft_matrixblocks AS r WHERE fieldId = ${field.id} AND ownerId = \${data.id};\`}
+				`;
+
+			// case 'Users':
+			// case 'Folders':
+
+			// TODO Tags
+			// TODO Table
+
+			default:
+				throw new Error(`Type ${field.type} is not a relation.`);
+		}
+	};
 
 	const relationToProperty = (field) => {
 		let single;
@@ -353,6 +393,21 @@ Promise.all([
 	process.stdout.write(`"use strict"
 
 const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
+const { isArray } = require('util');
+
+// UUID v4 generator (RFC4122 compliant)
+function uuid4 () {
+	let uuid = "", i, random;
+	for (i = 0; i < 32; ++i) {
+		random = Math.random() * 16 | 0;
+
+		if (i == 8 || i == 12 || i == 16 || i == 20) {
+			uuid += "-"
+		}
+		uuid += (i == 12 ? 4 : (i == 16 ? (random & 3 | 8) : random)).toString(16);
+	}
+	return uuid;
+}
 
 `);
 
@@ -399,6 +454,18 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 				if (err) return reject(err);
 				return resolve(ids);
 			})
+		});
+	},
+	onUpdate: (db, data, { locale }, configs) => {
+		return new Promise((resolve, reject) => {
+			db.query(\`
+				UPDATE craft_usergroups AS g
+				SET ${groupFields.filter(f => fieldToType(f).relation === null && f.handle !== 'id').map(f => `${f.column} = ?`).join(", ")}
+				WHERE u.id = \${data.id}
+			\`, [${groupFields.filter(f => fieldToType(f).relation === null && f.handle !== 'id').map(f => `data.${f.handle}`).join(', ')}], (err) => {
+				if (err) return reject(err);
+				return resolve(data)
+			});
 		});
 	}
 })`);
@@ -449,7 +516,7 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 				${userFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'groups').length > 0 ? `if (rows.length > 0) {
 					const rowIds = rows.map(row => row.id);
 					db.query(\`
-						(${userFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'groups').map(f => fieldToRelation(f)).concat([`SELECT userId AS "id", "groups" AS "key", groupId AS "value" FROM craft_usergroups_users WHERE userId IN (\${rowIds.join(', ')})`]).join(")\n\t\t\t\t\t\tUNION\n\t\t\t\t\t\t(")})
+						(${userFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'groups').map(f => fieldToRelationSelect(f)).concat([`SELECT userId AS "id", "groups" AS "key", groupId AS "value" FROM craft_usergroups_users WHERE userId IN (\${rowIds.join(', ')})`]).join(")\n\t\t\t\t\t\tUNION\n\t\t\t\t\t\t(")})
 					\`, (err, relations) => {
 						if (err) return reject(err);
 
@@ -471,12 +538,67 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 			})
 		});
 	},
-	onUpdate: (data, options, configs) => {
-		// const locale = options.locale = configs.defaultLocale;
-		// return [{
-		// 	query: \`UPDATE craft_users AS u LEFT JOIN craft_content AS c ON c.elementId = u.id AND c.locale = "\${locale}" SET ${userFields.filter(f => fieldToType(f).relation === null && f.handle !== 'id').map(f => `${f.column} = ?`).join(", ")} WHERE u.id = \${data.id}\`,
-		// 	values: [${userFields.filter(f => fieldToType(f).relation === null && f.handle !== 'id').map(f => `data.get('${f.handle}')`).join(', ')}]
-		// }];
+	onUpdate: (db, data, { locale }, configs) => {
+		return new Promise((resolve, reject) => {
+			db.query(\`
+				UPDATE craft_users AS u
+				LEFT JOIN craft_content AS c ON c.elementId = u.id AND c.locale = "\${locale}"
+				SET ${userFields.filter(f => fieldToType(f).relation === null && f.handle !== 'id').map(f => `${f.column} = ?`).join(", ")}
+				WHERE u.id = \${data.id}
+			\`, [${userFields.filter(f => fieldToType(f).relation === null && f.handle !== 'id').map(f => `data.${f.handle}`).join(', ')}], (err) => {
+				if (err) return reject(err);
+				${userFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'groups').length > 0 ? `
+				db.query(\`
+					DELETE g FROM craft_usergroups_users AS g WHERE userid = \${data.id};
+					\${data.groups && isArray(data.groups) && data.groups.length > 0 ? \`
+						INSERT INTO craft_usergroups_users (groupId, userId, dateCreated, dateUpdated, uid)
+						VALUES (\${data.groups.map(v => [v, data.id, 'NOW()', 'NOW()', \`"\${uuid4()}"\`].join(', ')).join('), (')});
+					\` : \`\`}
+
+					${userFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'groups').map(field => fieldToRelationInsert(field)).join("\n\t\t\t\t\t\t")}
+				\`, [], (err) => {
+					if (err) return reject(err);
+					return resolve(data);
+				});
+				` : ``}
+			});
+		});
+	},
+	onCreate: (db, data, { locale }, configs) => {
+		return new Promise((resolve, reject) => {
+			db.getConnection((err, conn) => {
+				if (err) return reject(err);
+
+				conn.beginTransaction(err => {
+					if (err) return reject(err);
+
+					conn.query(
+						\`INSERT INTO craft_elements (type, enabled, archived, dateCreated, dateUpdated, uid) VALUES (?, ?, ?, NOW(), NOW(), ?)\`,
+						['User', 1, 0, uuid4()],
+						(err, result) => {
+							if (err) return reject(err);
+							const id = result.insertId;
+
+							const sql = [\`INSERT INTO craft_users (id, username, firstName, lastName, email, preferredLocale, dateCreated, dateUpdated, uid) VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW(), ?)\`];
+							const values = [id, data.username, data.firstName, data.lastName, data.email, data.preferredLocale, uuid4()];
+
+							${locales.map(({ locale }) => {
+								return `sql.push(\`INSERT INTO craft_content (elementId, locale, title, dateCreated, dateUpdated, uid${userFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${userFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => f.column.substr(2)).join(', ')}` : ``}) VALUES (?, "${locale}", "", NOW(), NOW(), ?${userFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${userFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => '?').join(', ')}` : ``})\`);
+							values.push(id, uuid4()${userFields.filter(f => f.column[0] === 'c').length > 0 ? `, ${userFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => `data.${f.handle}`).join(', ')}` : ``});`;
+							}).join("\n\t\t\t\t\t\t\t")}
+
+							conn.query(sql.join(';'), values, (err, result) => {
+								if (err) {
+									return conn.rollback(() => {
+										return reject(err);
+									});
+								}
+							});
+						}
+					);
+				});
+			});
+		});
 	}
 })`);
 
@@ -546,7 +668,7 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 				${type.fields.filter(f => fieldToType(f).relation !== null && f.handle !== 'author').length > 0 ? `if (rows.length > 0) {
 					const rowIds = rows.map(row => row.id);
 					db.query(\`
-						(${type.fields.filter(f => fieldToType(f).relation !== null && f.handle !== 'author').map(f => fieldToRelation(f)).join(")\n\t\t\t\t\t\tUNION\n\t\t\t\t\t\t(")})
+						(${type.fields.filter(f => fieldToType(f).relation !== null && f.handle !== 'author').map(f => fieldToRelationSelect(f)).join(")\n\t\t\t\t\t\tUNION\n\t\t\t\t\t\t(")})
 					\`, (err, relations) => {
 						if (err) return reject(err);
 
@@ -640,7 +762,7 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 				${categoryFields.filter(f => fieldToType(f).relation !== null).length > 0 ? `if (rows.length > 0) {
 					const rowIds = rows.map(row => row.id);
 					db.query(\`
-						(${categoryFields.filter(f => fieldToType(f).relation !== null).map(f => fieldToRelation(f)).join(")\n\t\t\t\t\t\tUNION\n\t\t\t\t\t\t(")})
+						(${categoryFields.filter(f => fieldToType(f).relation !== null).map(f => fieldToRelationSelect(f)).join(")\n\t\t\t\t\t\tUNION\n\t\t\t\t\t\t(")})
 					\`, (err, relations) => {
 						if (err) return reject(err);
 
@@ -769,7 +891,7 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 				${assetFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'folder').length > 0 ? `if (rows.length > 0) {
 					const rowIds = rows.map(row => row.id);
 					db.query(\`
-						(${assetFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'folder').map(f => fieldToRelation(f)).join(")\n\t\t\t\t\t\tUNION\n\t\t\t\t\t\t(")})
+						(${assetFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'folder').map(f => fieldToRelationSelect(f)).join(")\n\t\t\t\t\t\tUNION\n\t\t\t\t\t\t(")})
 					\`, (err, relations) => {
 						if (err) return reject(err);
 
@@ -862,7 +984,7 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 				${type.fields.filter(f => fieldToType(f).relation !== null).length > 0 ? `if (rows.length > 0) {
 					const rowIds = rows.map(row => row.id);
 					db.query(\`
-						(${type.fields.filter(f => fieldToType(f).relation !== null).map(f => fieldToRelation(f)).join(")\n\t\t\t\t\t\tUNION\n\t\t\t\t\t\t(")})
+						(${type.fields.filter(f => fieldToType(f).relation !== null).map(f => fieldToRelationSelect(f)).join(")\n\t\t\t\t\t\tUNION\n\t\t\t\t\t\t(")})
 					\`, (err, relations) => {
 						if (err) return reject(err);
 
@@ -943,7 +1065,7 @@ const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
 				${tableFields.filter(f => fieldToType(f).relation !== null).length > 0 ? `if (rows.length > 0) {
 					const rowIds = rows.map(row => row.id);
 					db.query(\`
-						(${tableFields.filter(f => fieldToType(f).relation !== null).map(f => fieldToRelation(f)).join(")\n\t\t\t\t\t\tUNION\n\t\t\t\t\t\t(")})
+						(${tableFields.filter(f => fieldToType(f).relation !== null).map(f => fieldToRelationSelect(f)).join(")\n\t\t\t\t\t\tUNION\n\t\t\t\t\t\t(")})
 					\`, (err, relations) => {
 						if (err) return reject(err);
 
