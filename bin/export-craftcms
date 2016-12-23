@@ -640,7 +640,7 @@ Promise.all([
 
 							${locales.map(({ locale }) => {
 								return `sql.push(\`INSERT INTO craft_content (elementId, locale, title, dateCreated, dateUpdated, uid${userFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${userFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => f.column.substr(2)).join(', ')}` : ``}) VALUES (?, "${locale}", "", NOW(), NOW(), ?${userFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${userFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => '?').join(', ')}` : ``})\`);
-							values.push(id, uuid4()${userFields.filter(f => f.column[0] === 'c').length > 0 ? `, ${userFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => `data.${f.handle}`).join(', ')}` : ``});`;
+							values.push(id, uuid4()${userFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${userFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => `data.${f.handle}`).join(', ')}` : ``});`;
 							}).join("\n\t\t\t\t\t\t\t")}
 
 							if (data.groups && isArray(data.groups) && data.groups.length > 0) {
@@ -841,7 +841,7 @@ Promise.all([
 									sql.push(\`INSERT INTO craft_elements_i18n (elementId, locale, slug, uri, enabled, dateCreated, dateUpdated, uid) VALUES (?, "${locale}", ?, ?, 1, NOW(), NOW(), ?)\`);
 									values.push(data.id, "", "", uuid4()); // TODO slug & uri field
 									sql.push(\`INSERT INTO craft_content (elementId, locale, dateCreated, dateUpdated, uid${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => f.column.substr(2)).join(', ')}` : ``}) VALUES (?, "${locale}", NOW(), NOW(), ?${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => '?').join(', ')}` : ``})\`);
-									values.push(id, uuid4()${type.fields.filter(f => f.column[0] === 'c').length > 0 ? `, ${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => `data.${f.handle}`).join(', ')}` : ``});
+									values.push(id, uuid4()${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => `data.${f.handle}`).join(', ')}` : ``});
 									`;
 								}).join("\n\t\t\t\t\t\t\t")}
 
@@ -1041,7 +1041,7 @@ Promise.all([
 									sql.push(\`INSERT INTO craft_elements_i18n (elementId, locale, slug, uri, enabled, dateCreated, dateUpdated, uid) VALUES (?, "${locale}", ?, ?, 1, NOW(), NOW(), ?)\`);
 									values.push(data.id, "", "", uuid4()); // TODO slug & uri field
 									sql.push(\`INSERT INTO craft_content (elementId, locale, dateCreated, dateUpdated, uid${categoryFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${categoryFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => f.column.substr(2)).join(', ')}` : ``}) VALUES (?, "${locale}", NOW(), NOW(), ?${categoryFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${categoryFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => '?').join(', ')}` : ``})\`);
-									values.push(id, uuid4()${categoryFields.filter(f => f.column[0] === 'c').length > 0 ? `, ${categoryFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => `data.${f.handle}`).join(', ')}` : ``});
+									values.push(id, uuid4()${categoryFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${categoryFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => `data.${f.handle}`).join(', ')}` : ``});
 									`;
 								}).join("\n\t\t\t\t\t\t\t")}
 
@@ -1306,7 +1306,7 @@ Promise.all([
 									sql.push(\`INSERT INTO craft_elements_i18n (elementId, locale, slug, uri, enabled, dateCreated, dateUpdated, uid) VALUES (?, "${locale}", ?, ?, 1, NOW(), NOW(), ?)\`);
 									values.push(data.id, "", "", uuid4()); // TODO slug & uri field
 									sql.push(\`INSERT INTO craft_content (elementId, locale, dateCreated, dateUpdated, uid${assetFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${assetFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => f.column.substr(2)).join(', ')}` : ``}) VALUES (?, "${locale}", NOW(), NOW(), ?${assetFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${assetFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => '?').join(', ')}` : ``})\`);
-									values.push(id, uuid4()${assetFields.filter(f => f.column[0] === 'c').length > 0 ? `, ${assetFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => `data.${f.handle}`).join(', ')}` : ``});
+									values.push(id, uuid4()${assetFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${assetFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => `data.${f.handle}`).join(', ')}` : ``});
 									`;
 								}).join("\n\t\t\t\t\t\t\t")}
 
@@ -1503,7 +1503,7 @@ Promise.all([
 									sql.push(\`INSERT INTO craft_elements_i18n (elementId, locale, slug, uri, enabled, dateCreated, dateUpdated, uid) VALUES (?, "${locale}", ?, ?, 1, NOW(), NOW(), ?)\`);
 									values.push(data.id, "", "", uuid4());
 									sql.push(\`INSERT INTO craft_matrixcontent_${field.handle.toLowerCase()} (elementId, locale, dateCreated, dateUpdated, uid${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => f.column.substr(2)).join(', ')}` : ``}) VALUES (?, "${locale}", NOW(), NOW(), ?${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => '?').join(', ')}` : ``})\`);
-									values.push(id, uuid4()${type.fields.filter(f => f.column[0] === 'c').length > 0 ? `, ${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => `data.${f.handle}`).join(', ')}` : ``});
+									values.push(id, uuid4()${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => `data.${f.handle}`).join(', ')}` : ``});
 									`;
 								}).join("\n\t\t\t\t\t\t\t")}
 
@@ -1688,7 +1688,7 @@ Promise.all([
 									sql.push(\`INSERT INTO craft_elements_i18n (elementId, locale, slug, uri, enabled, dateCreated, dateUpdated, uid) VALUES (?, "${locale}", ?, ?, 1, NOW(), NOW(), ?)\`);
 									values.push(data.id, "", "", uuid4());
 									sql.push(\`INSERT INTO craft_supertablecontent_${field.handle.toLowerCase()} (elementId, locale, dateCreated, dateUpdated, uid${tableFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${tableFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => f.column.substr(2)).join(', ')}` : ``}) VALUES (?, "${locale}", NOW(), NOW(), ?${tableFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${tableFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => '?').join(', ')}` : ``})\`);
-									values.push(id, uuid4()${tableFields.filter(f => f.column[0] === 'c').length > 0 ? `, ${tableFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => `data.${f.handle}`).join(', ')}` : ``});
+									values.push(id, uuid4()${tableFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${tableFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => `data.${f.handle}`).join(', ')}` : ``});
 									`;
 								}).join("\n\t\t\t\t\t\t\t")}
 
