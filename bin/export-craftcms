@@ -321,27 +321,44 @@ Promise.all([
 			case 'Entries':
 			case 'Categories':
 				return `
-					DELETE r FROM craft_relations AS r WHERE fieldId = ${field.id} AND sourceId = \${data.id};
-					\${data.${field.handle} && isArray(data.${field.handle}) && data.${field.handle}.length > 0 ? \`
-						INSERT INTO craft_relations (fieldId, sourceId, sourceLocale, targetId, sortOrder, dateCreated, dateUpdated, uid)
-						VALUES (\${data.${field.handle}.map((v, i) => [${field.id}, data.id, 'NULL', v, i, 'NOW()', 'NOW()', \`"\${uuid4()}"\`].join(', ')).join('), (')});
-					\` : \`\`}
+					sql.push(\`DELETE r FROM craft_relations AS r WHERE fieldId = ${field.id} AND sourceId = ?\`);
+					values.push(data.id);
+					if (data.${field.handle} && isArray(data.${field.handle}) && data.${field.handle}.length > 0) {
+						sql.push(\`INSERT INTO craft_relations (fieldId, sourceId, sourceLocale, targetId, sortOrder, dateCreated, dateUpdated, uid) VALUES (\${data.${field.handle}.map(v => \`${field.id}, ?, NULL, ?, ?, NOW(), NOW(), ?\`).join('), (')})\`);
+						data.${field.handle}.forEach((v, i) => {
+							values.push(data.id, v, i, uuid4());
+						});
+					}
 				`;
 
 			case 'Matrix':
 				return `
-					\${data.${field.handle} && isArray(data.${field.handle}) && data.${field.handle}.length > 0 ? \`
-						DELETE r FROM craft_matrixblocks AS r WHERE fieldId = ${field.id} AND ownerId = \${data.id} AND id NOT IN (\${data.${field.handle}.join(', ')});
-						\${data.${field.handle}.map(v => \`UPDATE craft_matrixblocks SET fieldId = ${field.id}, ownerId = \${data.id} WHERE id = \${v} LIMIT 1\`).join(";\\n")}
-					\` : \`DELETE r FROM craft_matrixblocks AS r WHERE fieldId = ${field.id} AND ownerId = \${data.id};\`}
+					if (data.${field.handle} && isArray(data.${field.handle}) && data.${field.handle}.length > 0) {
+						sql.push(\`DELETE r FROM craft_matrixblocks AS r WHERE fieldId = ${field.id} AND ownerId = ? AND id NOT IN (?)\`);
+						values.push(data.id, data.${field.handle});
+						data.${field.handle}.forEach((v, i) => {
+							sql.push(\`UPDATE craft_matrixblocks SET fieldId = ${field.id}, ownerId = ? WHERE id = ? LIMIT 1\`);
+							values.push(data.id, v);
+						});
+					} else {
+						sql.push(\`DELETE r FROM craft_matrixblocks AS r WHERE fieldId = ${field.id} AND ownerId = ?\`);
+						values.push(data.id);
+					}
 				`;
 
 			case 'SuperTable':
 				return `
-					\${data.${field.handle} && isArray(data.${field.handle}) && data.${field.handle}.length > 0 ? \`
-						DELETE r FROM craft_supertableblocks AS r WHERE fieldId = ${field.id} AND ownerId = \${data.id} AND id NOT IN (\${data.${field.handle}.join(', ')});
-						\${data.${field.handle}.map(v => \`UPDATE craft_supertableblocks SET fieldId = ${field.id}, ownerId = \${data.id} WHERE id = \${v} LIMIT 1\`).join(";\\n")}
-					\` : \`DELETE r FROM craft_matrixblocks AS r WHERE fieldId = ${field.id} AND ownerId = \${data.id};\`}
+					if (data.${field.handle} && isArray(data.${field.handle}) && data.${field.handle}.length > 0) {
+						sql.push(\`DELETE r FROM craft_supertableblocks AS r WHERE fieldId = ${field.id} AND ownerId = ? AND id NOT IN (?)\`);
+						values.push(data.id, data.${field.handle});
+						data.${field.handle}.forEach((v, i) => {
+							sql.push(\`UPDATE craft_supertableblocks SET fieldId = ${field.id}, ownerId = ? WHERE id = ? LIMIT 1\`);
+							values.push(data.id, v);
+						});
+					} else {
+						sql.push(\`DELETE r FROM craft_supertableblocks AS r WHERE fieldId = ${field.id} AND ownerId = ?\`);
+						values.push(data.id);
+					}
 				`;
 
 			// case 'Users':
@@ -467,6 +484,18 @@ function uuid4 () {
 				return resolve(data)
 			});
 		});
+	},
+	onCreate: (db, data, options, configs) => {
+		return new Promise((resolve, reject) => {
+			db.query(
+				\`INSERT INTO craft_usergroups (name, handle, dateCreated, dateUpdated, uid) VALUES (?, ?, NOW(), NOW(), ?)\`,
+				[data.name, data.handle, uuid4()],
+				(err, result) => {
+					if (err) return reject(err);
+					return resolve(result.insertId);
+				}
+			);
+		});
 	}
 })`);
 
@@ -540,27 +569,46 @@ function uuid4 () {
 	},
 	onUpdate: (db, data, { locale }, configs) => {
 		return new Promise((resolve, reject) => {
-			db.query(\`
-				UPDATE craft_users AS u
-				LEFT JOIN craft_content AS c ON c.elementId = u.id AND c.locale = "\${locale}"
-				SET ${userFields.filter(f => fieldToType(f).relation === null && f.handle !== 'id').map(f => `${f.column} = ?`).join(", ")}
-				WHERE u.id = \${data.id}
-			\`, [${userFields.filter(f => fieldToType(f).relation === null && f.handle !== 'id').map(f => `data.${f.handle}`).join(', ')}], (err) => {
+			db.getConnection((err, conn) => {
 				if (err) return reject(err);
-				${userFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'groups').length > 0 ? `
-				db.query(\`
-					DELETE g FROM craft_usergroups_users AS g WHERE userid = \${data.id};
-					\${data.groups && isArray(data.groups) && data.groups.length > 0 ? \`
-						INSERT INTO craft_usergroups_users (groupId, userId, dateCreated, dateUpdated, uid)
-						VALUES (\${data.groups.map(v => [v, data.id, 'NOW()', 'NOW()', \`"\${uuid4()}"\`].join(', ')).join('), (')});
-					\` : \`\`}
 
-					${userFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'groups').map(field => fieldToRelationInsert(field)).join("\n\t\t\t\t\t\t")}
-				\`, [], (err) => {
+				conn.beginTransaction(err => {
 					if (err) return reject(err);
-					return resolve(data);
+
+					const sql = [\`
+						UPDATE craft_users AS u
+						LEFT JOIN craft_content AS c ON c.elementId = u.id AND c.locale = "\${locale}"
+						SET ${userFields.filter(f => fieldToType(f).relation === null && f.handle !== 'id').map(f => `${f.column} = ?`).join(", ")}
+						WHERE u.id = \${data.id}
+					\`];
+					const values = [${userFields.filter(f => fieldToType(f).relation === null && f.handle !== 'id').map(f => `data.${f.handle}`).join(', ')}];
+
+					sql.push(\`DELETE g FROM craft_usergroups_users AS g WHERE userid = ?\`);
+					values.push(data.id);
+
+					if (data.groups && isArray(data.groups) && data.groups.length > 0) {
+						sql.push(\`INSERT INTO craft_usergroups_users (groupId, userId, dateCreated, dateUpdated, uid) VALUES (\${data.groups.map(v => \`?, ?, NOW(), NOW(), ?\`).join('), (')})\`);
+						data.groups.forEach((v, i) => {
+							values.push(v, data.id, uuid4());
+						});
+					}
+
+					${userFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'groups').map(field => fieldToRelationInsert(field)).join("\n\t\t\t\t\t")}
+
+					conn.query(sql.join(';'), values, (err, result) => {
+						if (err) {
+							return conn.rollback(() => {
+								return reject(err);
+							});
+						}
+						return conn.commit(err => {
+							if (err) return conn.rollback(() => {
+								return reject(err);
+							});
+							return resolve(data);
+						});
+					});
 				});
-				` : ``}
 			});
 		});
 	},
@@ -578,6 +626,7 @@ function uuid4 () {
 						(err, result) => {
 							if (err) return reject(err);
 							const id = result.insertId;
+							data.id = id;
 
 							const sql = [\`INSERT INTO craft_users (id, username, firstName, lastName, email, preferredLocale, dateCreated, dateUpdated, uid) VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW(), ?)\`];
 							const values = [id, data.username, data.firstName, data.lastName, data.email, data.preferredLocale, uuid4()];
@@ -587,12 +636,27 @@ function uuid4 () {
 							values.push(id, uuid4()${userFields.filter(f => f.column[0] === 'c').length > 0 ? `, ${userFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => `data.${f.handle}`).join(', ')}` : ``});`;
 							}).join("\n\t\t\t\t\t\t\t")}
 
+							if (data.groups && isArray(data.groups) && data.groups.length > 0) {
+								sql.push(\`INSERT INTO craft_usergroups_users (groupId, userId, dateCreated, dateUpdated, uid) VALUES (\${data.groups.map(v => \`?, ?, NOW(), NOW(), ?\`).join('), (')})\`);
+								data.groups.forEach((v, i) => {
+									values.push(v, data.id, uuid4());
+								});
+							}
+
+							${userFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'groups').map(field => fieldToRelationInsert(field)).join("\n\t\t\t\t\t")}
+
 							conn.query(sql.join(';'), values, (err, result) => {
 								if (err) {
 									return conn.rollback(() => {
 										return reject(err);
 									});
 								}
+								return conn.commit(err => {
+									if (err) return conn.rollback(() => {
+										return reject(err);
+									});
+									return resolve(id);
+								});
 							});
 						}
 					);
