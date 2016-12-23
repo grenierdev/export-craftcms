@@ -123,15 +123,15 @@ Promise.all([
 			case 'Entries':
 				try {
 					if (settings.sources == '*') {
-						type = 'Section';
+						type = 'Entry';
 					}
 					else if (settings.sources.length == 1) {
 						let id = settings.sources[0].substr(8);
 						let section = sections.filter(section => section.id == id)[0];
-						type = `Section${section.handle[0].toUpperCase() + section.handle.substr(1)}`;
+						type = `Entry${section.handle[0].toUpperCase() + section.handle.substr(1)}`;
 					}
 					else {
-						type = field.handle[0].toUpperCase() + field.handle.substr(1) + `Sections`;
+						type = field.handle[0].toUpperCase() + field.handle.substr(1) + `Entries`;
 						if (models.indexOf(type) === -1) {
 							models.push(type);
 							outputModels.push(`class ${type} extends UnionModel {
@@ -139,7 +139,7 @@ Promise.all([
 		return [${settings.sources.map(source => {
 			const id = source.substr(8);
 			const section = sections.filter(section => section.id == id)[0];
-			return `Section${section.handle[0].toUpperCase() + section.handle.substr(1)}`;
+			return `Entry${section.handle[0].toUpperCase() + section.handle.substr(1)}`;
 		}).join(', ')}];
 	}
 }
@@ -323,7 +323,11 @@ Promise.all([
 				return `
 					sql.push(\`DELETE r FROM craft_relations AS r WHERE fieldId = ${field.id} AND sourceId = ?\`);
 					values.push(data.id);
-					if (data.${field.handle} && isArray(data.${field.handle}) && data.${field.handle}.length > 0) {
+					if (data.${field.handle} && isArray(data.${field.handle}) === false) {
+						sql.push(\`INSERT INTO craft_relations (fieldId, sourceId, sourceLocale, targetId, sortOrder, dateCreated, dateUpdated, uid) VALUES (${field.id}, ?, NULL, ?, ?, NOW(), NOW(), ?)\`);
+						values.push(data.id, data.${field.handle}, 0, uuid4());
+					}
+					else if (data.${field.handle} && isArray(data.${field.handle}) && data.${field.handle}.length > 0) {
 						sql.push(\`INSERT INTO craft_relations (fieldId, sourceId, sourceLocale, targetId, sortOrder, dateCreated, dateUpdated, uid) VALUES (\${data.${field.handle}.map(v => \`${field.id}, ?, NULL, ?, ?, NOW(), NOW(), ?\`).join('), (')})\`);
 						data.${field.handle}.forEach((v, i) => {
 							values.push(data.id, v, i, uuid4());
@@ -333,14 +337,21 @@ Promise.all([
 
 			case 'Matrix':
 				return `
-					if (data.${field.handle} && isArray(data.${field.handle}) && data.${field.handle}.length > 0) {
+					if (data.${field.handle} && isArray(data.${field.handle}) === false) {
+						sql.push(\`DELETE r FROM craft_matrixblocks AS r WHERE fieldId = ${field.id} AND ownerId = ? AND id != ?\`);
+						values.push(data.id, data.${field.handle});
+						sql.push(\`UPDATE craft_matrixblocks SET fieldId = ${field.id}, ownerId = ? WHERE id = ? LIMIT 1\`);
+						values.push(data.id, data.${field.handle});
+					}
+					else if (data.${field.handle} && isArray(data.${field.handle}) && data.${field.handle}.length > 0) {
 						sql.push(\`DELETE r FROM craft_matrixblocks AS r WHERE fieldId = ${field.id} AND ownerId = ? AND id NOT IN (?)\`);
 						values.push(data.id, data.${field.handle});
 						data.${field.handle}.forEach((v, i) => {
 							sql.push(\`UPDATE craft_matrixblocks SET fieldId = ${field.id}, ownerId = ? WHERE id = ? LIMIT 1\`);
 							values.push(data.id, v);
 						});
-					} else {
+					}
+					else {
 						sql.push(\`DELETE r FROM craft_matrixblocks AS r WHERE fieldId = ${field.id} AND ownerId = ?\`);
 						values.push(data.id);
 					}
@@ -348,14 +359,21 @@ Promise.all([
 
 			case 'SuperTable':
 				return `
-					if (data.${field.handle} && isArray(data.${field.handle}) && data.${field.handle}.length > 0) {
+					if (data.${field.handle} && isArray(data.${field.handle}) === false) {
+						sql.push(\`DELETE r FROM craft_supertableblocks AS r WHERE fieldId = ${field.id} AND ownerId = ? AND id != ?\`);
+						values.push(data.id, data.${field.handle});
+						sql.push(\`UPDATE craft_supertableblocks SET fieldId = ${field.id}, ownerId = ? WHERE id = ? LIMIT 1\`);
+						values.push(data.id, data.${field.handle});
+					}
+					else if (data.${field.handle} && isArray(data.${field.handle}) && data.${field.handle}.length > 0) {
 						sql.push(\`DELETE r FROM craft_supertableblocks AS r WHERE fieldId = ${field.id} AND ownerId = ? AND id NOT IN (?)\`);
 						values.push(data.id, data.${field.handle});
 						data.${field.handle}.forEach((v, i) => {
 							sql.push(\`UPDATE craft_supertableblocks SET fieldId = ${field.id}, ownerId = ? WHERE id = ? LIMIT 1\`);
 							values.push(data.id, v);
 						});
-					} else {
+					}
+					else {
 						sql.push(\`DELETE r FROM craft_supertableblocks AS r WHERE fieldId = ${field.id} AND ownerId = ?\`);
 						values.push(data.id);
 					}
@@ -407,27 +425,6 @@ Promise.all([
 		}
 	}
 
-	process.stdout.write(`"use strict"
-
-const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
-const { isArray } = require('util');
-
-// UUID v4 generator (RFC4122 compliant)
-function uuid4 () {
-	let uuid = "", i, random;
-	for (i = 0; i < 32; ++i) {
-		random = Math.random() * 16 | 0;
-
-		if (i == 8 || i == 12 || i == 16 || i == 20) {
-			uuid += "-"
-		}
-		uuid += (i == 12 ? 4 : (i == 16 ? (random & 3 | 8) : random)).toString(16);
-	}
-	return uuid;
-}
-
-`);
-
 	let groupFields = [
 		{handle: 'id', column: 'g.id', type: 'ID', name: 'ID'},
 		{handle: 'handle', column: 'g.handle', type: 'PlainText', required: true, name: 'Handle'},
@@ -477,9 +474,9 @@ function uuid4 () {
 		return new Promise((resolve, reject) => {
 			db.query(\`
 				UPDATE craft_usergroups AS g
-				SET ${groupFields.filter(f => fieldToType(f).relation === null && f.handle !== 'id').map(f => `${f.column} = ?`).join(", ")}
+				SET ${groupFields.filter(f => fieldToType(f).relation === null && ['id', 'dateCreated', 'dateUpdated'].indexOf(f.handle) == -1).map(f => `${f.column} = ?`).join(", ")}, g.dateUpdated = NOW()
 				WHERE u.id = \${data.id}
-			\`, [${groupFields.filter(f => fieldToType(f).relation === null && f.handle !== 'id').map(f => `data.${f.handle}`).join(', ')}], (err) => {
+			\`, [${groupFields.filter(f => fieldToType(f).relation === null && ['id', 'dateCreated', 'dateUpdated'].indexOf(f.handle) == -1).map(f => `data.${f.handle}`).join(', ')}], (err) => {
 				if (err) return reject(err);
 				return resolve(data)
 			});
@@ -570,18 +567,20 @@ function uuid4 () {
 	onUpdate: (db, data, { locale }, configs) => {
 		return new Promise((resolve, reject) => {
 			db.getConnection((err, conn) => {
-				if (err) return reject(err);
+				const release = () => {
+						conn.release();
+						return reject(err);
+					};
+				if (err) return release(err);
 
 				conn.beginTransaction(err => {
-					if (err) return reject(err);
+					if (err) return release(err);
 
-					const sql = [\`
-						UPDATE craft_users AS u
-						LEFT JOIN craft_content AS c ON c.elementId = u.id AND c.locale = "\${locale}"
-						SET ${userFields.filter(f => fieldToType(f).relation === null && f.handle !== 'id').map(f => `${f.column} = ?`).join(", ")}
-						WHERE u.id = \${data.id}
-					\`];
-					const values = [${userFields.filter(f => fieldToType(f).relation === null && f.handle !== 'id').map(f => `data.${f.handle}`).join(', ')}];
+					const sql = [];
+					const values = [];
+
+					sql.push(\`UPDATE craft_users AS u LEFT JOIN craft_content AS c ON c.elementId = u.id AND c.locale = "\${locale}" SET ${userFields.filter(f => fieldToType(f).relation === null && f.handle !== 'id').map(f => `${f.column} = ?`).join(", ")}, u.dateUpdated = NOW(), c.dateUpdated = NOW() WHERE u.id = \${data.id}\`);
+					values.push(${userFields.filter(f => fieldToType(f).relation === null && ['id', 'dateCreated', 'dateUpdated'].indexOf(f.handle) == -1).map(f => `data.${f.handle}`).join(', ')});
 
 					sql.push(\`DELETE g FROM craft_usergroups_users AS g WHERE userid = ?\`);
 					values.push(data.id);
@@ -598,13 +597,14 @@ function uuid4 () {
 					conn.query(sql.join(';'), values, (err, result) => {
 						if (err) {
 							return conn.rollback(() => {
-								return reject(err);
+								return release(err);
 							});
 						}
 						return conn.commit(err => {
 							if (err) return conn.rollback(() => {
-								return reject(err);
+								return release(err);
 							});
+							conn.release();
 							return resolve(data);
 						});
 					});
@@ -618,18 +618,25 @@ function uuid4 () {
 				if (err) return reject(err);
 
 				conn.beginTransaction(err => {
-					if (err) return reject(err);
+					const release = () => {
+						conn.release();
+						return reject(err);
+					};
+					if (err) return release(err);
 
 					conn.query(
 						\`INSERT INTO craft_elements (type, enabled, archived, dateCreated, dateUpdated, uid) VALUES (?, ?, ?, NOW(), NOW(), ?)\`,
 						['User', 1, 0, uuid4()],
 						(err, result) => {
-							if (err) return reject(err);
+							if (err) return release(err);
 							const id = result.insertId;
 							data.id = id;
 
-							const sql = [\`INSERT INTO craft_users (id, username, firstName, lastName, email, preferredLocale, dateCreated, dateUpdated, uid) VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW(), ?)\`];
-							const values = [id, data.username, data.firstName, data.lastName, data.email, data.preferredLocale, uuid4()];
+							const sql = [];
+							const values = [];
+
+							sql.push(\`INSERT INTO craft_users (id, username, firstName, lastName, email, preferredLocale, dateCreated, dateUpdated, uid) VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW(), ?)\`);
+							values.push(id, data.username, data.firstName, data.lastName, data.email, data.preferredLocale, uuid4());
 
 							${locales.map(({ locale }) => {
 								return `sql.push(\`INSERT INTO craft_content (elementId, locale, title, dateCreated, dateUpdated, uid${userFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${userFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => f.column.substr(2)).join(', ')}` : ``}) VALUES (?, "${locale}", "", NOW(), NOW(), ?${userFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${userFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => '?').join(', ')}` : ``})\`);
@@ -648,13 +655,14 @@ function uuid4 () {
 							conn.query(sql.join(';'), values, (err, result) => {
 								if (err) {
 									return conn.rollback(() => {
-										return reject(err);
+										return release(err);
 									});
 								}
 								return conn.commit(err => {
 									if (err) return conn.rollback(() => {
-										return reject(err);
+										return release(err);
 									});
+									conn.release();
 									return resolve(id);
 								});
 							});
@@ -697,10 +705,10 @@ function uuid4 () {
 
 		sectionTypes.forEach(type => {
 			const typeHandle = sectionTypes.length == 1 ? sectionHandle : sectionHandle + type.handle[0].toUpperCase() + type.handle.substr(1);
-			sectionHandles.push(`Section${typeHandle}`);
-			typeHandles.push(`Section${typeHandle}`);
-			models.push(`Section${typeHandle}`);
-			outputModels.push(`class Section${typeHandle} extends Model {
+			sectionHandles.push(`Entry${typeHandle}`);
+			typeHandles.push(`Entry${typeHandle}`);
+			models.push(`Entry${typeHandle}`);
+			outputModels.push(`class Entry${typeHandle} extends Model {
 	static get schema () {
 		return {
 			${type.fields.map(field => fieldToDefinition(field)).join(',\n\t\t\t')}
@@ -709,7 +717,7 @@ function uuid4 () {
 }
 
 `);
-			outputRecords.push(`domain.registerRecord(adapter, Section${typeHandle}, {
+			outputRecords.push(`domain.registerRecord(adapter, Entry${typeHandle}, {
 	defaultLocale: locale,
 	propertyMap: {
 		${type.fields.map(f => `'${f.handle}': '${f.column}'`).join(",\n\t\t")}
@@ -717,7 +725,7 @@ function uuid4 () {
 	onSelect: (db, where, order, { limit, skip, locale }, configs) => {
 		return new Promise((resolve, reject) => {
 			db.query(\`
-				SELECT ${type.fields.filter(f => fieldToType(f).relation === null).map(f => `${f.column} AS "${f.handle}"`).join(", ")}
+				SELECT ${type.fields.filter(f => fieldToType(f).relation === null).map(f => `${f.column} AS "${f.handle}"`).join(", ")}, e.authorId AS "author"
 				FROM craft_elements AS el
 				LEFT JOIN craft_entries AS e ON e.id = el.id
 				LEFT JOIN craft_elements_i18n AS eli ON eli.elementId = e.id AND eli.locale = "\${locale}"
@@ -753,32 +761,138 @@ function uuid4 () {
 				return resolve(ids);
 			})
 		});
+	},
+	onUpdate: (db, data, { locale }, configs) => {
+		return new Promise((resolve, reject) => {
+			return new Promise((resolve, reject) => {
+				db.getConnection((err, conn) => {
+					const release = () => {
+						conn.release();
+						return reject(err);
+					};
+					if (err) return release(err);
+
+					conn.beginTransaction(err => {
+						if (err) return release(err);
+
+						const sql = [];
+						const values = [];
+
+						sql.push(\`
+							UPDATE craft_elements AS el
+							LEFT JOIN craft_entries AS e ON e.id = el.id
+							LEFT JOIN craft_elements_i18n AS eli ON eli.elementId = e.id AND eli.locale = "\${locale}"
+							LEFT JOIN craft_content AS c ON c.elementId = el.id AND c.locale = "\${locale}"
+							SET ${type.fields.filter(f => fieldToType(f).relation === null && ['id', 'dateCreated', 'dateUpdated'].indexOf(f.handle) == -1).map(f => `${f.column} = ?`).join(", ")}, el.dateUpdated = NOW(), e.dateUpdated = NOW(), eli.dateUpdated = NOW(), c.dateUpdated = NOW()
+							WHERE el.id = \${data.id}
+						\`);
+						values.push(${type.fields.filter(f => fieldToType(f).relation === null && ['id', 'dateCreated', 'dateUpdated'].indexOf(f.handle) == -1).map(f => `data.${f.handle}`).join(', ')});
+
+						${type.fields.filter(f => fieldToType(f).relation !== null && f.handle !== 'author').map(field => fieldToRelationInsert(field)).join("\n\t\t\t\t\t")}
+
+						conn.query(sql.join(';'), values, (err, result) => {
+							if (err) {
+								return conn.rollback(() => {
+									return release(err);
+								});
+							}
+							return conn.commit(err => {
+								if (err) return conn.rollback(() => {
+									return release(err);
+								});
+								conn.release();
+								return resolve(data);
+							});
+						});
+					});
+				});
+			});
+		});
+	},
+	onCreate: (db, data, options, configs) => {
+		return new Promise((resolve, reject) => {
+			return new Promise((resolve, reject) => {
+				db.getConnection((err, conn) => {
+					const release = () => {
+						conn.release();
+						return reject(err);
+					};
+					if (err) return release(err);
+
+					conn.beginTransaction(err => {
+						if (err) return release(err);
+
+						conn.query(
+							\`INSERT INTO craft_elements (type, enabled, archived, dateCreated, dateUpdated, uid) VALUES (?, ?, ?, NOW(), NOW(), ?)\`,
+							['Entry', 1, 0, uuid4()],
+							(err, result) => {
+								if (err) return release(err);
+								const id = result.insertId;
+								data.id = id;
+
+								const sql = [];
+								const values = [];
+
+								sql.push(\`INSERT INTO craft_entries (id, sectionId, typeId, authorId, postDate, expiryDate, dateCreated, dateUpdated, uid) VALUES (?, ${section.id}, ${type.id}, ?, ?, ?, NOW(), NOW(), ?)\`);
+								values.push(data.id, data.author, data.postDate, data.expiryDate, uuid4());
+
+								${locales.map(({ locale }) => {
+									return `
+									sql.push(\`INSERT INTO craft_elements_i18n (elementId, locale, slug, uri, enabled, dateCreated, dateUpdated, uid) VALUES (?, "${locale}", ?, ?, 1, NOW(), NOW(), ?)\`);
+									values.push(data.id, "", "", uuid4()); // TODO slug & uri field
+									sql.push(\`INSERT INTO craft_content (elementId, locale, dateCreated, dateUpdated, uid${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => f.column.substr(2)).join(', ')}` : ``}) VALUES (?, "${locale}", NOW(), NOW(), ?${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => '?').join(', ')}` : ``})\`);
+									values.push(id, uuid4()${type.fields.filter(f => f.column[0] === 'c').length > 0 ? `, ${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => `data.${f.handle}`).join(', ')}` : ``});
+									`;
+								}).join("\n\t\t\t\t\t\t\t")}
+
+								${type.fields.filter(f => fieldToType(f).relation !== null && f.handle !== 'author').map(field => fieldToRelationInsert(field)).join("\n\t\t\t\t\t")}
+
+								conn.query(sql.join(';'), values, (err, result) => {
+									if (err) {
+										return conn.rollback(() => {
+											return release(err);
+										});
+									}
+									return conn.commit(err => {
+										if (err) return conn.rollback(() => {
+											return release(err);
+										});
+										conn.release();
+										return resolve(data);
+									});
+								});
+							}
+						);
+					});
+				});
+			});
+		});
 	}
 })`);
 		});
 
 		if (typeHandles.length > 1) {
-			models.push(`Section${sectionHandle}`);
-			outputModels.push(`class Section${sectionHandle} extends UnionModel {
+			models.push(`Entry${sectionHandle}`);
+			outputModels.push(`class Entry${sectionHandle} extends UnionModel {
 	static get models () {
 		return [${typeHandles.join(', ')}];
 	}
 }
 
 `);
-			outputRecords.push(`domain.registerRecord(adapter, Section${sectionHandle}, {})`);
+			outputRecords.push(`domain.registerRecord(adapter, Entry${sectionHandle}, {})`);
 		}
 	});
 
-	models.push(`Section`);
-	outputModels.push(`class Section extends UnionModel {
+	models.push(`Entry`);
+	outputModels.push(`class Entry extends UnionModel {
 	static get models () {
 		return [${sectionHandles.join(', ')}];
 	}
 }
 
 `);
-	outputRecords.push(`domain.registerRecord(adapter, Section, {})`);
+	outputRecords.push(`domain.registerRecord(adapter, Entry, {})`);
 
 	const categoryHandles = [];
 
@@ -847,6 +961,112 @@ function uuid4 () {
 				return resolve(ids);
 			})
 		});
+	},
+	onUpdate: (db, data, { locale }, configs) => {
+		return new Promise((resolve, reject) => {
+			return new Promise((resolve, reject) => {
+				db.getConnection((err, conn) => {
+					const release = () => {
+						conn.release();
+						return reject(err);
+					};
+					if (err) return release(err);
+
+					conn.beginTransaction(err => {
+						if (err) return release(err);
+
+						const sql = [];
+						const values = [];
+
+						sql.push(\`
+							UPDATE craft_elements AS el
+							LEFT JOIN craft_categories AS ca ON ca.id = el.id
+							LEFT JOIN craft_elements_i18n AS eli ON eli.elementId = e.id AND eli.locale = "\${locale}"
+							LEFT JOIN craft_content AS c ON c.elementId = el.id AND c.locale = "\${locale}"
+							SET ${categoryFields.filter(f => fieldToType(f).relation === null && ['id', 'dateCreated', 'dateUpdated'].indexOf(f.handle) == -1).map(f => `${f.column} = ?`).join(", ")}, el.dateUpdated = NOW(), ca.dateUpdated = NOW(), eli.dateUpdated = NOW(), c.dateUpdated = NOW()
+							WHERE el.id = \${data.id}
+						\`);
+						values.push(${categoryFields.filter(f => fieldToType(f).relation === null && ['id', 'dateCreated', 'dateUpdated'].indexOf(f.handle) == -1).map(f => `data.${f.handle}`).join(', ')});
+
+						${categoryFields.filter(f => fieldToType(f).relation !== null).map(field => fieldToRelationInsert(field)).join("\n\t\t\t\t\t")}
+
+						conn.query(sql.join(';'), values, (err, result) => {
+							if (err) {
+								return conn.rollback(() => {
+									return release(err);
+								});
+							}
+							return conn.commit(err => {
+								if (err) return conn.rollback(() => {
+									return release(err);
+								});
+								conn.release();
+								return resolve(data);
+							});
+						});
+					});
+				});
+			});
+		});
+	},
+	onCreate: (db, data, options, configs) => {
+		return new Promise((resolve, reject) => {
+			return new Promise((resolve, reject) => {
+				db.getConnection((err, conn) => {
+					const release = () => {
+						conn.release();
+						return reject(err);
+					};
+					if (err) return release(err);
+
+					conn.beginTransaction(err => {
+						if (err) return release(err);
+
+						conn.query(
+							\`INSERT INTO craft_elements (type, enabled, archived, dateCreated, dateUpdated, uid) VALUES (?, ?, ?, NOW(), NOW(), ?)\`,
+							['Category', 1, 0, uuid4()],
+							(err, result) => {
+								if (err) return release(err);
+								const id = result.insertId;
+								data.id = id;
+
+								const sql = [];
+								const values = [];
+
+								sql.push(\`INSERT INTO craft_entries (id, groupId, dateCreated, dateUpdated, uid) VALUES (?, ${category.id}, NOW(), NOW(), ?)\`);
+								values.push(data.id, uuid4());
+
+								${locales.map(({ locale }) => {
+									return `
+									sql.push(\`INSERT INTO craft_elements_i18n (elementId, locale, slug, uri, enabled, dateCreated, dateUpdated, uid) VALUES (?, "${locale}", ?, ?, 1, NOW(), NOW(), ?)\`);
+									values.push(data.id, "", "", uuid4()); // TODO slug & uri field
+									sql.push(\`INSERT INTO craft_content (elementId, locale, dateCreated, dateUpdated, uid${categoryFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${categoryFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => f.column.substr(2)).join(', ')}` : ``}) VALUES (?, "${locale}", NOW(), NOW(), ?${categoryFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${categoryFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => '?').join(', ')}` : ``})\`);
+									values.push(id, uuid4()${categoryFields.filter(f => f.column[0] === 'c').length > 0 ? `, ${categoryFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => `data.${f.handle}`).join(', ')}` : ``});
+									`;
+								}).join("\n\t\t\t\t\t\t\t")}
+
+								${categoryFields.filter(f => fieldToType(f).relation !== null).map(field => fieldToRelationInsert(field)).join("\n\t\t\t\t\t")}
+
+								conn.query(sql.join(';'), values, (err, result) => {
+									if (err) {
+										return conn.rollback(() => {
+											return release(err);
+										});
+									}
+									return conn.commit(err => {
+										if (err) return conn.rollback(() => {
+											return release(err);
+										});
+										conn.release();
+										return resolve(data);
+									});
+								});
+							}
+						);
+					});
+				});
+			});
+		});
 	}
 })`);
 	});
@@ -904,6 +1124,38 @@ function uuid4 () {
 				if (err) return reject(err);
 				return resolve(ids);
 			})
+		});
+	},
+	onUpdate: (db, data, { locale }, configs) => {
+		return new Promise((resolve, reject) => {
+			return new Promise((resolve, reject) => {
+				db.query(
+					\`
+						UPDATE craft_assetfolders AS f
+						SET ${folderFields.filter(f => fieldToType(f).relation === null && ['id', 'dateCreated', 'dateUpdated'].indexOf(f.handle) == -1).map(f => `${f.column} = ?`).join(", ")}, f.dateUpdated = NOW()
+						WHERE f.id = \${data.id}
+					\`,
+					[${folderFields.filter(f => fieldToType(f).relation === null && ['id', 'dateCreated', 'dateUpdated'].indexOf(f.handle) == -1).map(f => `data.${f.handle}`).join(', ')}],
+					(err, results) => {
+						if (err) return reject(err);
+						return resolve(data);
+					}
+				);
+			});
+		});
+	},
+	onCreate: (db, data, options, configs) => {
+		return new Promise((resolve, reject) => {
+			return new Promise((resolve, reject) => {
+				db.query(
+					\`INSERT INTO craft_assetfolders (name, parent, dateCreated, dateUpdated, uid) VALUES (?, ?, NOW(), NOW(), ?)\`,
+					[data.name, data.parent, uuid4()],
+					(err, result) => {
+						if (err) return reject(err);
+						return resolve(result.insertId);
+					}
+				);
+			});
 		});
 	}
 })`);
@@ -977,6 +1229,110 @@ function uuid4 () {
 			})
 		});
 	},
+	onUpdate: (db, data, { locale }, configs) => {
+		return new Promise((resolve, reject) => {
+			return new Promise((resolve, reject) => {
+				db.getConnection((err, conn) => {
+					const release = () => {
+						conn.release();
+						return reject(err);
+					};
+					if (err) return release(err);
+
+					conn.beginTransaction(err => {
+						if (err) return release(err);
+
+						const sql = [];
+						const values = [];
+
+						sql.push(\`
+							UPDATE craft_assetfiles AS a
+							LEFT JOIN craft_content AS c ON c.elementId = a.id AND c.locale = "\${locale}"
+							SET ${assetFields.filter(f => fieldToType(f).relation === null && ['id', 'dateCreated', 'dateUpdated'].indexOf(f.handle) == -1).map(f => `${f.column} = ?`).join(", ")}, a.dateUpdated = NOW(), c.dateUpdated = NOW()
+							WHERE a.id = \${data.id}
+						\`);
+						values.push(${assetFields.filter(f => fieldToType(f).relation === null && ['id', 'dateCreated', 'dateUpdated'].indexOf(f.handle) == -1).map(f => `data.${f.handle}`).join(', ')});
+
+						${assetFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'folder').map(field => fieldToRelationInsert(field)).join("\n\t\t\t\t\t")}
+
+						conn.query(sql.join(';'), values, (err, result) => {
+							if (err) {
+								return conn.rollback(() => {
+									return release(err);
+								});
+							}
+							return conn.commit(err => {
+								if (err) return conn.rollback(() => {
+									return release(err);
+								});
+								conn.release();
+								return resolve(data);
+							});
+						});
+					});
+				});
+			});
+		});
+	},
+	onCreate: (db, data, options, configs) => {
+		return new Promise((resolve, reject) => {
+			return new Promise((resolve, reject) => {
+				db.getConnection((err, conn) => {
+					const release = () => {
+						conn.release();
+						return reject(err);
+					};
+					if (err) return release(err);
+
+					conn.beginTransaction(err => {
+						if (err) return release(err);
+
+						conn.query(
+							\`INSERT INTO craft_elements (type, enabled, archived, dateCreated, dateUpdated, uid) VALUES (?, ?, ?, NOW(), NOW(), ?)\`,
+							['Asset', 1, 0, uuid4()],
+							(err, result) => {
+								if (err) return release(err);
+								const id = result.insertId;
+								data.id = id;
+
+								const sql = [];
+								const values = [];
+
+								sql.push(\`INSERT INTO craft_assetfiles (id, sourceId, folderId, filename, kind, width, height, size, dateModified, dateCreated, dateUpdated, uid) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), ?)\`);
+								values.push(data.id, data.parent, data.filename, data.kind, data.width, data.height, data.size, data.dateModified, uuid4());
+
+								${locales.map(({ locale }) => {
+									return `
+									sql.push(\`INSERT INTO craft_elements_i18n (elementId, locale, slug, uri, enabled, dateCreated, dateUpdated, uid) VALUES (?, "${locale}", ?, ?, 1, NOW(), NOW(), ?)\`);
+									values.push(data.id, "", "", uuid4()); // TODO slug & uri field
+									sql.push(\`INSERT INTO craft_content (elementId, locale, dateCreated, dateUpdated, uid${assetFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${assetFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => f.column.substr(2)).join(', ')}` : ``}) VALUES (?, "${locale}", NOW(), NOW(), ?${assetFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${assetFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => '?').join(', ')}` : ``})\`);
+									values.push(id, uuid4()${assetFields.filter(f => f.column[0] === 'c').length > 0 ? `, ${assetFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => `data.${f.handle}`).join(', ')}` : ``});
+									`;
+								}).join("\n\t\t\t\t\t\t\t")}
+
+								${assetFields.filter(f => fieldToType(f).relation !== null && f.handle !== 'folder').map(field => fieldToRelationInsert(field)).join("\n\t\t\t\t\t")}
+
+								conn.query(sql.join(';'), values, (err, result) => {
+									if (err) {
+										return conn.rollback(() => {
+											return release(err);
+										});
+									}
+									return conn.commit(err => {
+										if (err) return conn.rollback(() => {
+											return release(err);
+										});
+										conn.release();
+										return resolve(data);
+									});
+								});
+							}
+						);
+					});
+				});
+			});
+		});
+	}
 })`);
 	});
 
@@ -1069,6 +1425,110 @@ function uuid4 () {
 				return resolve(ids);
 			})
 		});
+	},
+	onUpdate: (db, data, { locale }, configs) => {
+		return new Promise((resolve, reject) => {
+			return new Promise((resolve, reject) => {
+				db.getConnection((err, conn) => {
+					const release = () => {
+						conn.release();
+						return reject(err);
+					};
+					if (err) return release(err);
+
+					conn.beginTransaction(err => {
+						if (err) return release(err);
+
+						const sql = [];
+						const values = [];
+
+						sql.push(\`
+							UPDATE craft_matrixblocks AS b
+							LEFT JOIN craft_matrixcontent_${field.handle.toLowerCase()} AS c ON c.elementId = b.id AND c.locale = "\${locale}"
+							SET ${type.fields.filter(f => fieldToType(f).relation === null && ['id', 'dateCreated', 'dateUpdated'].indexOf(f.handle) == -1).map(f => `${f.column} = ?`).join(", ")}, b.dateUpdated = NOW(), c.dateUpdated = NOW()
+							WHERE b.id = \${data.id}
+						\`);
+						values.push(${type.fields.filter(f => fieldToType(f).relation === null && ['id', 'dateCreated', 'dateUpdated'].indexOf(f.handle) == -1).map(f => `data.${f.handle}`).join(', ')});
+
+						${type.fields.filter(f => fieldToType(f).relation !== null).map(field => fieldToRelationInsert(field)).join("\n\t\t\t\t\t")}
+
+						conn.query(sql.join(';'), values, (err, result) => {
+							if (err) {
+								return conn.rollback(() => {
+									return release(err);
+								});
+							}
+							return conn.commit(err => {
+								if (err) return conn.rollback(() => {
+									return release(err);
+								});
+								conn.release();
+								return resolve(data);
+							});
+						});
+					});
+				});
+			});
+		});
+	},
+	onCreate: (db, data, options, configs) => {
+		return new Promise((resolve, reject) => {
+			return new Promise((resolve, reject) => {
+				db.getConnection((err, conn) => {
+					const release = () => {
+						conn.release();
+						return reject(err);
+					};
+					if (err) return release(err);
+
+					conn.beginTransaction(err => {
+						if (err) return release(err);
+
+						conn.query(
+							\`INSERT INTO craft_elements (type, enabled, archived, dateCreated, dateUpdated, uid) VALUES (?, ?, ?, NOW(), NOW(), ?)\`,
+							['MatrixBlock', 1, 0, uuid4()],
+							(err, result) => {
+								if (err) return release(err);
+								const id = result.insertId;
+								data.id = id;
+
+								const sql = [];
+								const values = [];
+
+								sql.push(\`INSERT INTO craft_matrixblocks (id, ownerId, fieldId, typeId, sortOrder, ownerLocale, dateCreated, dateUpdated, uid) VALUES (?, NULL, ${field.id}, ${type.id}, 0, NULL, NOW(), NOW(), ?)\`);
+								values.push(data.id, uuid4());
+
+								${locales.map(({ locale }) => {
+									return `
+									sql.push(\`INSERT INTO craft_elements_i18n (elementId, locale, slug, uri, enabled, dateCreated, dateUpdated, uid) VALUES (?, "${locale}", ?, ?, 1, NOW(), NOW(), ?)\`);
+									values.push(data.id, "", "", uuid4());
+									sql.push(\`INSERT INTO craft_matrixcontent_${field.handle.toLowerCase()} (elementId, locale, dateCreated, dateUpdated, uid${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => f.column.substr(2)).join(', ')}` : ``}) VALUES (?, "${locale}", NOW(), NOW(), ?${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => '?').join(', ')}` : ``})\`);
+									values.push(id, uuid4()${type.fields.filter(f => f.column[0] === 'c').length > 0 ? `, ${type.fields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => `data.${f.handle}`).join(', ')}` : ``});
+									`;
+								}).join("\n\t\t\t\t\t\t\t")}
+
+								${type.fields.filter(f => fieldToType(f).relation !== null).map(field => fieldToRelationInsert(field)).join("\n\t\t\t\t\t")}
+
+								conn.query(sql.join(';'), values, (err, result) => {
+									if (err) {
+										return conn.rollback(() => {
+											return release(err);
+										});
+									}
+									return conn.commit(err => {
+										if (err) return conn.rollback(() => {
+											return release(err);
+										});
+										conn.release();
+										return resolve(data);
+									});
+								});
+							}
+						);
+					});
+				});
+			});
+		});
 	}
 })`);
 		});
@@ -1151,27 +1611,148 @@ function uuid4 () {
 			})
 		});
 	},
+	onUpdate: (db, data, { locale }, configs) => {
+		return new Promise((resolve, reject) => {
+			return new Promise((resolve, reject) => {
+				db.getConnection((err, conn) => {
+					const release = () => {
+						conn.release();
+						return reject(err);
+					};
+					if (err) return release(err);
+
+					conn.beginTransaction(err => {
+						if (err) return release(err);
+
+						const sql = [];
+						const values = [];
+
+						sql.push(\`
+							UPDATE craft_supertableblocks AS b
+							LEFT JOIN craft_supertablecontent_${field.handle.toLowerCase()} AS c ON c.elementId = b.id AND c.locale = "\${locale}"
+							SET ${tableFields.filter(f => fieldToType(f).relation === null && ['id', 'dateCreated', 'dateUpdated'].indexOf(f.handle) == -1).map(f => `${f.column} = ?`).join(", ")}, b.dateUpdated = NOW(), c.dateUpdated = NOW()
+							WHERE b.id = \${data.id}
+						\`);
+						values.push(${tableFields.filter(f => fieldToType(f).relation === null && ['id', 'dateCreated', 'dateUpdated'].indexOf(f.handle) == -1).map(f => `data.${f.handle}`).join(', ')});
+
+						${tableFields.filter(f => fieldToType(f).relation !== null).map(field => fieldToRelationInsert(field)).join("\n\t\t\t\t\t")}
+
+						conn.query(sql.join(';'), values, (err, result) => {
+							if (err) {
+								return conn.rollback(() => {
+									return release(err);
+								});
+							}
+							return conn.commit(err => {
+								if (err) return conn.rollback(() => {
+									return release(err);
+								});
+								conn.release();
+								return resolve(data);
+							});
+						});
+					});
+				});
+			});
+		});
+	},
+	onCreate: (db, data, options, configs) => {
+		return new Promise((resolve, reject) => {
+			return new Promise((resolve, reject) => {
+				db.getConnection((err, conn) => {
+					const release = () => {
+						conn.release();
+						return reject(err);
+					};
+					if (err) return release(err);
+
+					conn.beginTransaction(err => {
+						if (err) return release(err);
+
+						conn.query(
+							\`INSERT INTO craft_elements (type, enabled, archived, dateCreated, dateUpdated, uid) VALUES (?, ?, ?, NOW(), NOW(), ?)\`,
+							['MatrixBlock', 1, 0, uuid4()],
+							(err, result) => {
+								if (err) return release(err);
+								const id = result.insertId;
+								data.id = id;
+
+								const sql = [];
+								const values = [];
+
+								sql.push(\`INSERT INTO craft_supertableblocks (id, ownerId, fieldId, typeId, sortOrder, ownerLocale, dateCreated, dateUpdated, uid) VALUES (?, NULL, ${field.id}, NULL, 0, NULL, NOW(), NOW(), ?)\`);
+								values.push(data.id, uuid4());
+
+								${locales.map(({ locale }) => {
+									return `
+									sql.push(\`INSERT INTO craft_elements_i18n (elementId, locale, slug, uri, enabled, dateCreated, dateUpdated, uid) VALUES (?, "${locale}", ?, ?, 1, NOW(), NOW(), ?)\`);
+									values.push(data.id, "", "", uuid4());
+									sql.push(\`INSERT INTO craft_supertablecontent_${field.handle.toLowerCase()} (elementId, locale, dateCreated, dateUpdated, uid${tableFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${tableFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => f.column.substr(2)).join(', ')}` : ``}) VALUES (?, "${locale}", NOW(), NOW(), ?${tableFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).length > 0 ? `, ${tableFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => '?').join(', ')}` : ``})\`);
+									values.push(id, uuid4()${tableFields.filter(f => f.column[0] === 'c').length > 0 ? `, ${tableFields.filter(f => f.column[0] === 'c' && fieldToType(f).relation === null).map(f => `data.${f.handle}`).join(', ')}` : ``});
+									`;
+								}).join("\n\t\t\t\t\t\t\t")}
+
+								${tableFields.filter(f => fieldToType(f).relation !== null).map(field => fieldToRelationInsert(field)).join("\n\t\t\t\t\t")}
+
+								conn.query(sql.join(';'), values, (err, result) => {
+									if (err) {
+										return conn.rollback(() => {
+											return release(err);
+										});
+									}
+									return conn.commit(err => {
+										if (err) return conn.rollback(() => {
+											return release(err);
+										});
+										conn.release();
+										return resolve(data);
+									});
+								});
+							}
+						);
+					});
+				});
+			});
+		});
+	}
 })`);
 	});
 
-	process.stdout.write(outputModels.join(''));
+	process.stdout.write(`"use strict"
 
-	process.stdout.write(`function createRecords (domain, adapter, locale) {
+const { Model, UnionModel, Type, Schema } = require('konstellio-orm');
+const { isArray } = require('util');
+
+// UUID v4 generator (RFC4122 compliant)
+function uuid4 () {
+	let uuid = "", i, random;
+	for (i = 0; i < 32; ++i) {
+		random = Math.random() * 16 | 0;
+
+		if (i == 8 || i == 12 || i == 16 || i == 20) {
+			uuid += "-"
+		}
+		uuid += (i == 12 ? 4 : (i == 16 ? (random & 3 | 8) : random)).toString(16);
+	}
+	return uuid;
+}
+
+${outputModels.join('')}
+
+function createRecords (domain, adapter, locale) {
 	return Promise.all([
 		${outputRecords.join(",\n")}
-	]).then(records => {
+	]).then(([${models.join(', ')}]) => {
 		return {
-			${models.map((model, i) => `${model}: records[${i}]`).join(",\n\t\t\t")}
+			${models.join(", ")}
 		};
 	});
 }
 
-`);
-
-	process.stdout.write(`module.exports = {
+module.exports = {
 	models: { ${models.join(', ')} },
 	createRecords: createRecords
-}`);
+};`);
 
 })
 .catch(err => {
