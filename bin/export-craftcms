@@ -496,7 +496,6 @@ Promise.all([
 	}
 })`);
 
-	let userLayoutId = layouts.filter(l => l.type === 'User')[0].id;
 	let userFields = [
 		{handle: 'id', column: 'u.id', type: 'ID', name: 'ID'},
 		{handle: 'username', column: 'u.username', type: 'PlainText', required: true, name: 'Username'},
@@ -508,7 +507,10 @@ Promise.all([
 		{handle: 'dateCreated', column: 'u.dateCreated', type: 'Date', name: 'Created date'},
 		{handle: 'dateUpdated', column: 'u.dateUpdated', type: 'Date', name: 'Updated date'}
 	];
-	userFields.push.apply(userFields, layoutFields.filter(lf => lf.layoutId == userLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]));
+	if (layouts.filter(l => l.type === 'User').length > 0) {
+		let userLayoutId = layouts.filter(l => l.type === 'User')[0].id;
+		userFields.push.apply(userFields, layoutFields.filter(lf => lf.layoutId == userLayoutId).map(lf => fields.filter(f => lf.fieldId == f.id)[0]));
+	}
 
 	models.push(`User`);
 	outputModels.push(`class User extends Model {
