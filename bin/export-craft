@@ -12,7 +12,6 @@ const help = require('optimist')
 
 const argv = help.argv;
 const MySQL = require('mysql');
-const Promise = require('bluebird');
 
 const db = MySQL.createPool({
 	connectionLimit: 10,
@@ -81,7 +80,7 @@ Promise.all([
 		});
 	}),
 ])
-.spread((locales, globals, sections, types, categories, matrices, assets, layouts, layoutFields, fields, superTables) => {
+.then(([locales, globals, sections, types, categories, matrices, assets, layouts, layoutFields, fields, superTables]) => {
 
 	const models = [];
 	const outputRecords = [];
